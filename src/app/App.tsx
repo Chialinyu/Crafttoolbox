@@ -6,37 +6,32 @@ import { MosaicGenerator } from './components/MosaicGeneratorV2';
 import { VectorizerTool } from './components/VectorizerTool';
 import { Footer } from './components/Footer';
 import { Toaster } from './components/ui/sonner';
-import { initGA, logPageView, logToolUsage } from '@/utils/analytics';
+import { initGA, trackPageView } from '@/utils/analytics';
 
 /**
  * Main App Component
  * - Wrapped with LanguageProvider for bilingual support (Chinese/English)
  * - Includes Header, Footer, and main content area
  * - Supports tool routing: HomePage, MosaicGenerator, VectorizerTool
- * - Integrated with Google Analytics for usage tracking
+ * - Google Analytics 4 integration
  * 
- * Version: 0.3.0 - Added Google Analytics integration
+ * Version: 0.2.4 - Added GA4 integration
  */
 function App() {
   const [currentTool, setCurrentTool] = useState<string | null>(null);
 
-  // Initialize Google Analytics on app mount
+  // Initialize Google Analytics
   useEffect(() => {
     initGA();
-    logPageView('/', 'Craft TooBox Home Page');
   }, []);
 
-  // Track tool navigation
+  // Track page view when tool changes
   useEffect(() => {
-    if (currentTool === 'mosaic-generator') {
-      logPageView('/mosaic-generator', 'Mosaic Generator');
-      logToolUsage('Mosaic Generator', 'open');
-    } else if (currentTool === 'vectorizer-tool') {
-      logPageView('/vectorizer-tool', 'Vectorizer Tool');
-      logToolUsage('Vectorizer Tool', 'open');
-    } else if (currentTool === null) {
-      logPageView('/', 'Craft ToolBox Home Page');
-    }
+    const pagePath = currentTool ? `/tool/${currentTool}` : '/';
+    const pageTitle = currentTool 
+      ? currentTool === 'mosaic-generator' ? 'Mosaic Generator' : 'Vectorizer Tool'
+      : 'Craft ToolBox Home Page';
+    trackPageView(pagePath, pageTitle);
   }, [currentTool]);
 
   const renderContent = () => {

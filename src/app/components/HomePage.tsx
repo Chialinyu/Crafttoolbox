@@ -4,6 +4,7 @@ import { Search, Sparkles, Wrench } from 'lucide-react';
 import { Input } from './ui/input';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card';
 import { motion } from 'motion/react';
+import { trackToolUsage } from '@/utils/analytics';
 import mosaicCoverImage from 'figma:asset/4c8c8c444f1a5c2f669857a0cf97d9b4e297969c.png';
 import vectorizerCoverImage from 'figma:asset/26dbf5422d730b30c7e811c79eb16feb1ffe0331.png';
 
@@ -136,7 +137,10 @@ export const HomePage: React.FC<HomePageProps> = ({ onSelectTool }) => {
               >
                 <Card
                   className="cursor-pointer hover:shadow-lg transition-all duration-300 hover:-translate-y-1 overflow-hidden group"
-                  onClick={() => onSelectTool(tool.id)}
+                  onClick={() => {
+                    trackToolUsage(tool.id, 'tool_selected', t(tool.nameKey));
+                    onSelectTool(tool.id);
+                  }}
                 >
                   {tool.imageUrl ? (
                     <div className="h-48 overflow-hidden relative">

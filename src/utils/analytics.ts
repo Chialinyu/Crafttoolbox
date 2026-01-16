@@ -1,147 +1,138 @@
 /**
- * Google Analytics 4 配置
+ * Google Analytics 4 Integration
  * 
- * 使用方式：
- * 1. 在 Google Analytics 中創建新的 GA4 屬性
- * 2. 複製測量 ID (格式: G-XXXXXXXXXX)
- * 3. 將測量 ID 替換下方的 YOUR_GA4_MEASUREMENT_ID
+ * 提供輕量級的 GA4 事件追蹤，不影響應用性能
  */
 
-import ReactGA from 'react-ga4';
+// GA4 測量 ID
+const GA_MEASUREMENT_ID = 'G-GWJH5XZQ1R';
 
-// ⚠️ 重要：請替換為您的 Google Analytics 4 測量 ID
-const GA_MEASUREMENT_ID = 'G-GWJH5XZQ1R'; // 替換為您的實際測量 ID
-
-// 開發模式下開啟詳細日誌
-const isDevelopment = import.meta.env.DEV;
+// 定義 window.gtag 類型
+declare global {
+  interface Window {
+    gtag?: (...args: any[]) => void;
+    dataLayer?: any[];
+  }
+}
 
 /**
  * 初始化 Google Analytics
+ * 異步加載，不阻塞頁面渲染
  */
 export const initGA = (): void => {
-  try {
-    if (isDevelopment) {
-      console.log('🔧 [GA Debug] Initializing Google Analytics...');
-      console.log('🔧 [GA Debug] Measurement ID:', GA_MEASUREMENT_ID);
-      console.log('🔧 [GA Debug] Environment:', import.meta.env.MODE);
-    }
+  // 避免重複初始化
+  if (window.gtag) {
+    return;
+  }
 
-    ReactGA.initialize(GA_MEASUREMENT_ID, {
-      gaOptions: {
-        // 可選配置
-        anonymizeIp: true, // 匿名化 IP 地址，遵守隱私法規
-        debug_mode: isDevelopment, // 開發環境下啟用調試模式
-      },
-      gtagOptions: {
-        // 可選配置
-        send_page_view: false, // 禁用自動頁面瀏覽追蹤，手動控制
-        debug_mode: isDevelopment, // 開發環境下啟用調試模式
-      },
+  try {
+    // 創建 dataLayer
+    window.dataLayer = window.dataLayer || [];
+    
+    // 定義 gtag 函數
+    window.gtag = function() {
+      window.dataLayer?.push(arguments);
+    };
+    
+    // 初始化配置
+    window.gtag('js', new Date());
+    window.gtag('config', GA_MEASUREMENT_ID, {
+      send_page_view: true,
     });
-    
-    console.log('✅ Google Analytics initialized successfully');
-    console.log('📊 Measurement ID:', GA_MEASUREMENT_ID);
-    
-    // 驗證 gtag 是否可用
-    if (typeof window !== 'undefined' && typeof (window as any).gtag !== 'undefined') {
-      console.log('✅ gtag function is available');
-    } else {
-      console.warn('⚠️ gtag function is NOT available - GA may be blocked');
-    }
+
+    // 異步加載 GA 腳本
+    const script = document.createElement('script');
+    script.async = true;
+    script.src = `https://www.googletagmanager.com/gtag/js?id=${GA_MEASUREMENT_ID}`;
+    document.head.appendChild(script);
   } catch (error) {
-    console.error('❌ Failed to initialize Google Analytics:', error);
+    // GA initialization failed silently
   }
 };
 
 /**
  * 追蹤頁面瀏覽
- * @param path - 頁面路徑
- * @param title - 頁面標題
  */
-export const logPageView = (path: string, title?: string): void => {
+export const trackPageView = (pagePath: string, pageTitle?: string): void => {
+  if (!window.gtag) return;
+  
   try {
-    if (isDevelopment) {
-      console.log('📄 [GA Debug] Page View:', { path, title: title || document.title });
-    }
-    
-    ReactGA.send({
-      hitType: 'pageview',
-      page: path,
-      title: title || document.title,
+    window.gtag('event', 'page_view', {
+      page_path: pagePath,
+      page_title: pageTitle || document.title,
     });
-    
-    console.log('📊 GA Page View sent:', path);
   } catch (error) {
-    console.error('❌ Failed to log page view:', error);
-  }
-};
-
-/**
- * 追蹤自定義事件
- * @param category - 事件類別
- * @param action - 事件動作
- * @param label - 事件標籤（可選）
- * @param value - 事件值（可選）
- */
-export const logEvent = (
-  category: string,
-  action: string,
-  label?: string,
-  value?: number
-): void => {
-  try {
-    if (isDevelopment) {
-      console.log('🎯 [GA Debug] Event:', { category, action, label, value });
-    }
-    
-    ReactGA.event({
-      category,
-      action,
-      label,
-      value,
-    });
-    
-    console.log('📊 GA Event sent:', { category, action, label });
-  } catch (error) {
-    console.error('❌ Failed to log event:', error);
+    // Silently fail
   }
 };
 
 /**
  * 追蹤工具使用事件
- * @param toolName - 工具名稱
- * @param action - 動作（如：open, close, export, etc.）
- * @param details - 額外詳情（可選）
  */
-export const logToolUsage = (
-  toolName: string,
-  action: string,
-  details?: string
-): void => {
-  logEvent('Tool Usage', action, `${toolName}${details ? ` - ${details}` : ''}`);
-};
-
-/**
- * 追蹤語言切換
- * @param language - 切換後的語言
- */
-export const logLanguageChange = (language: string): void => {
-  logEvent('User Interaction', 'Language Change', language);
-};
-
-/**
- * 追蹤錯誤
- * @param description - 錯誤描述
- * @param fatal - 是否為致命錯誤
- */
-export const logError = (description: string, fatal: boolean = false): void => {
+export const trackToolUsage = (toolName: string, action: string, label?: string): void => {
+  if (!window.gtag) return;
+  
   try {
-    ReactGA.event({
-      category: 'Error',
-      action: fatal ? 'Fatal Error' : 'Non-Fatal Error',
-      label: description,
+    window.gtag('event', action, {
+      event_category: 'tool_usage',
+      event_label: `${toolName}${label ? `: ${label}` : ''}`,
+      tool_name: toolName,
     });
   } catch (error) {
-    console.error('Failed to log error event:', error);
+    // Silently fail
+  }
+};
+
+/**
+ * 追蹤圖片上傳事件
+ */
+export const trackImageUpload = (toolName: string, fileSize?: number, fileType?: string): void => {
+  if (!window.gtag) return;
+  
+  try {
+    window.gtag('event', 'image_upload', {
+      event_category: 'user_interaction',
+      event_label: toolName,
+      tool_name: toolName,
+      file_size: fileSize,
+      file_type: fileType,
+    });
+  } catch (error) {
+    // Silently fail
+  }
+};
+
+/**
+ * 追蹤導出事件
+ */
+export const trackExport = (toolName: string, format: string, fileSize?: number): void => {
+  if (!window.gtag) return;
+  
+  try {
+    window.gtag('event', 'export', {
+      event_category: 'conversion',
+      event_label: `${toolName}: ${format}`,
+      tool_name: toolName,
+      export_format: format,
+      file_size: fileSize,
+    });
+  } catch (error) {
+    // Silently fail
+  }
+};
+
+/**
+ * 追蹤自定義事件
+ */
+export const trackEvent = (
+  eventName: string,
+  params?: Record<string, any>
+): void => {
+  if (!window.gtag) return;
+  
+  try {
+    window.gtag('event', eventName, params);
+  } catch (error) {
+    // Silently fail
   }
 };

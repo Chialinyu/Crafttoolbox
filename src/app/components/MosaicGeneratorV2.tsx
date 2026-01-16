@@ -1,3 +1,15 @@
+/**
+ * Mosaic Generator V2
+ * 
+ * Core Systems:
+ * - ColorMap Index Mapping: Prevents color corruption on canvas operations
+ * - SegmentMemory: Spatial memory for user modifications
+ * - Full Undo/Redo history
+ * 
+ * For detailed changelog and technical documentation, see:
+ * /MOSAIC_DEVELOPMENT_LOG.md
+ */
+
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { Upload, Download, Copy, ArrowLeft, Undo, Redo, RotateCcw } from 'lucide-react';
 import { useLanguage } from '../contexts/LanguageContext';
@@ -9,6 +21,7 @@ import { ToolPageLayout } from './ui/ToolPageLayout';
 import { toast } from 'sonner';
 import { RadioGroup, RadioGroupItem } from './ui/radio-group';
 import { Label } from './ui/label';
+import { trackToolUsage, trackImageUpload, trackExport } from '@/utils/analytics';
 
 import {
   rgbToHex,
@@ -35,53 +48,6 @@ import {
   TileSettingsPanel,
   BorderEffectsPanel,
 } from './mosaic';
-
-/**
- * 🎨 MOSAIC GENERATOR V2
- * 
- * 🔑 CORE INNOVATIONS:
- * 
- * 1️⃣ ColorMap Index Mapping System
- *    - Decouples tile colors from palette indices
- *    - Enables dynamic palette adjustments without recalculating entire mosaic
- * 
- * 2️⃣ SegmentMemory Spatial Memory System
- *    - Tracks SPATIAL REGIONS of user color modifications (not just color mappings)
- *    - Preserves modifications across canvas resize, color merges, and re-segmentation
- *    - Uses IoU (Intersection over Union) to match segments after canvas changes
- * 
- * 🐛 CRITICAL BUGS FIXED:
- * 
- * [2025-01-16] Color Merge + Canvas Resize Bug
- *   Problem: When merging colors (e.g., changing two colors to white), then resizing
- *            canvas, the merged colors would revert to their original colors.
- *   
- *   Root Cause Chain:
- *   1. Color picker fired onChange twice (browser quirk)
- *   2. First call: Record modification, detect duplicate, merge colors
- *   3. Second call: Try to merge again but palette already changed
- *   4. removeModificationsForColor() deleted the spatial memory
- *   5. originalPaletteSnapshot was being updated during merge
- *   
- *   Solution:
- *   ✅ Anti-duplicate check: if palette[index] === newColor, return early
- *   ✅ NEVER update originalPaletteSnapshot after initial generation
- *   ✅ NEVER call removeModificationsForColor() during color merge
- *   ✅ Keep ALL SegmentMemory modifications for canvas resize to work
- *   
- *   Why it works:
- *   - originalPaletteSnapshot = base reference (never changes)
- *   - Canvas resize re-samples with base palette
- *   - SegmentMemory re-applies ALL modifications (including merged colors)
- *   - Result: Merged colors persist correctly ✨
- * 
- * 📊 Color Modification Workflow:
- *   Initial:  palette=[色1, 色2, ..., 色7], originalSnapshot=[色1, 色2, ..., 色7]
- *   User:     index=4 → white (recorded in SegmentMemory)
- *   User:     index=5 → white (merge detected, palette becomes 6 colors)
- *   SegmentMemory: [(4, 色4→white), (5, 色5→white)] ← BOTH preserved!
- *   Resize:   Re-sample with 7-color base → Apply both modifications → White persists ✅
- */
 
 interface ColorStats {
   color: string;
@@ -115,14 +81,8 @@ export const MosaicGenerator: React.FC<MosaicGeneratorProps> = ({ onBack }) => {
   const [paletteModified, setPaletteModified] = useState(false);
   const [modifiedColorIndices, setModifiedColorIndices] = useState<Set<number>>(new Set());
   const segmentMemoryRef = useRef<SegmentMemory>(new SegmentMemory());
-  
-  // 🎯 COLOR MAPPING SYSTEM - Critical refs for handling color modifications
-  // originalPaletteSnapshot: Stores the INITIAL palette from image generation
-  //   - Never modified after initial generation
-  //   - Used as reference when resizing canvas to remap colors correctly
-  //   - SegmentMemory tracks all user modifications on top of this base
-  const originalPaletteSnapshotRef = useRef<string[]>([]);
-  
+  const originalPaletteSnapshotRef = useRef<string[]>([]);  // 🔥 FIX: Use ref for immediate sync
+  const lastColorChangeRef = useRef<{ index: number; color: string; timestamp: number } | null>(null);  // 🔥 防抖保護
   const [colorStats, setColorStats] = useState<ColorStats[]>([]);
   const [hasTransparent, setHasTransparent] = useState(false);
   const [transparentCount, setTransparentCount] = useState(0);
@@ -468,20 +428,82 @@ export const MosaicGenerator: React.FC<MosaicGeneratorProps> = ({ onBack }) => {
 
     // Apply segment memory modifications (if any)
     const hasModifications = segmentMemoryRef.current.size() > 0;
-    let finalPaletteWithModifications = finalPalette;
+    
+    // 🔥 STEP 1: First deduplicate the CLEAN base palette (before SegmentMemory)
+    // This is what we save to originalPaletteSnapshotRef for future canvas resizing
+    const cleanColorToIndex = new Map<string, number>();
+    const cleanDeduplicatedPalette: string[] = [];
+    const cleanIndexMapping: { [key: number]: number } = {};
+    
+    finalPalette.forEach((color, oldIndex) => {
+      if (cleanColorToIndex.has(color)) {
+        cleanIndexMapping[oldIndex] = cleanColorToIndex.get(color)!;
+      } else {
+        const newIndex = cleanDeduplicatedPalette.length;
+        cleanDeduplicatedPalette.push(color);
+        cleanColorToIndex.set(color, newIndex);
+        cleanIndexMapping[oldIndex] = newIndex;
+      }
+    });
+    
+    // Remap colorMap if clean palette had duplicates
+    let cleanColorMap = newColorMap;
+    if (cleanDeduplicatedPalette.length < finalPalette.length) {
+      cleanColorMap = newColorMap.map(row =>
+        row.map(oldIndex => {
+          if (oldIndex === -1) return -1;
+          return cleanIndexMapping[oldIndex] ?? oldIndex;
+        })
+      );
+    }
+    
+    // 🔥 STEP 2: Save the clean deduplicated palette to snapshot (for canvas resize)
+    originalPaletteSnapshotRef.current = cleanDeduplicatedPalette;
+    
+    // 🔥 STEP 3: Now apply SegmentMemory modifications on top of clean palette
+    let finalPaletteWithModifications = cleanDeduplicatedPalette;
+    let finalColorMap = cleanColorMap;
     
     if (hasModifications) {
       finalPaletteWithModifications = segmentMemoryRef.current.applyModificationsToPalette(
-        newColorMap,
-        finalPalette
+        cleanColorMap,
+        cleanDeduplicatedPalette
       );
+    }
+    
+    // 🔥 STEP 4: Deduplicate again (SegmentMemory might introduce duplicates)
+    const colorToIndex = new Map<string, number>();
+    const deduplicatedPalette: string[] = [];
+    const indexMapping: { [key: number]: number } = {};
+    
+    finalPaletteWithModifications.forEach((color, oldIndex) => {
+      if (colorToIndex.has(color)) {
+        // This color already exists, map old index to existing index
+        indexMapping[oldIndex] = colorToIndex.get(color)!;
+      } else {
+        // New unique color
+        const newIndex = deduplicatedPalette.length;
+        deduplicatedPalette.push(color);
+        colorToIndex.set(color, newIndex);
+        indexMapping[oldIndex] = newIndex;
+      }
+    });
+    
+    // If duplicates were found, remap the color map
+    if (deduplicatedPalette.length < finalPaletteWithModifications.length) {
+      finalColorMap = cleanColorMap.map(row =>
+        row.map(oldIndex => {
+          if (oldIndex === -1) return -1; // Preserve transparent
+          return indexMapping[oldIndex] ?? oldIndex;
+        })
+      );
+      finalPaletteWithModifications = deduplicatedPalette;
     }
     
     setPalette(finalPaletteWithModifications);
     setPaletteModified(hasModifications);
-    originalPaletteSnapshotRef.current = finalPalette;  // 🔥 FIX: Use ref for immediate sync
     setModifiedColorIndices(new Set());
-    setTileColorMap(newColorMap);
+    setTileColorMap(finalColorMap);
 
     // Determine if this is a new image upload or a color count change
     const isNewImageOrFirstGeneration = tileColorMap.length === 0 || imageChanged;
@@ -618,6 +640,9 @@ export const MosaicGenerator: React.FC<MosaicGeneratorProps> = ({ onBack }) => {
           // Don't carry over modifications from previous images!
           segmentMemoryRef.current.clear();
           
+          // Track image upload to GA
+          trackImageUpload('mosaic-generator', file.size, file.type);
+          
           // Update dimensions and image
           setMosaicWidth(finalWidth);
           setMosaicHeight(finalHeight);
@@ -662,12 +687,20 @@ export const MosaicGenerator: React.FC<MosaicGeneratorProps> = ({ onBack }) => {
   };
 
   const handleColorChange = (colorIndex: number, newColor: string) => {
-    if (!newColor) return;
+    if (!newColor) return;  // Guard against undefined
     const newColorHex = newColor.startsWith('#') ? newColor : `#${newColor}`;
     
-    // Get original color from snapshot for SegmentMemory tracking
+    // 🔥 FIX: Debounce protection - prevent duplicate calls within 50ms
+    const now = Date.now();
+    const last = lastColorChangeRef.current;
+    if (last && last.index === colorIndex && last.color === newColorHex && now - last.timestamp < 50) {
+      return;
+    }
+    lastColorChangeRef.current = { index: colorIndex, color: newColorHex, timestamp: now };
+    
+    // Get original color from snapshot using ref (immediate sync)
     const oldColorHex = originalPaletteSnapshotRef.current[colorIndex] || palette[colorIndex];
-    if (!oldColorHex) return;
+    if (!oldColorHex) return;  // Guard against undefined
     
     // Convert to "r,g,b" format for SegmentMemory
     const oldColorRgbArray = hexToRgbArray(oldColorHex.startsWith('#') ? oldColorHex : rgbToHex(oldColorHex));
@@ -676,7 +709,7 @@ export const MosaicGenerator: React.FC<MosaicGeneratorProps> = ({ onBack }) => {
     const oldColorRgbString = oldColorRgbArray.join(',');
     const newColorRgbString = newColorRgbArray.join(',');
     
-    // Record modification in SegmentMemory (tracks spatial regions + color changes)
+    // Record segment modification (spatial region + color change)
     segmentMemoryRef.current.recordModification(
       tileColorMap,
       colorIndex,
@@ -684,33 +717,30 @@ export const MosaicGenerator: React.FC<MosaicGeneratorProps> = ({ onBack }) => {
       newColorRgbString
     );
     
-    // Convert to RGB format for palette consistency
+    // Convert hex to rgb format to maintain consistency with palette format
     const newColorRgb = hexToRgb(newColorHex);
     
-    // 🔥 ANTI-DUPLICATE: Prevent redundant operations if color already matches
-    // This handles color picker double-firing and repeated clicks
+    // 🔥 FIX: Prevent duplicate operations - if color hasn't changed, return early
     if (palette[colorIndex] === newColorRgb) {
       return;
     }
     
     setPaletteModified(true);
     
-    // Mark this color index as modified
+    // Mark this color index as modified by the user
     setModifiedColorIndices(prev => {
       const newSet = new Set(prev);
       newSet.add(colorIndex);
       return newSet;
     });
     
-    // Check if this color already exists in palette (auto-merge duplicates)
+    // Check if this color already exists in palette (compare in RGB format)
     const existingIndex = palette.findIndex((c, i) => i !== colorIndex && c === newColorRgb);
     
     if (existingIndex !== -1) {
-      // 🎯 COLOR MERGE: User changed a color to match another existing color
-      // Remove the duplicate and remap all tile indices
+      // Merge duplicate colors
       const newPalette = palette.filter((_, i) => i !== colorIndex);
       
-      // Remap all tile indices: merge colorIndex into existingIndex, shift others down
       const newColorMap = tileColorMap.map(row => 
         row.map(idx => {
           if (idx === colorIndex) {
@@ -723,22 +753,19 @@ export const MosaicGenerator: React.FC<MosaicGeneratorProps> = ({ onBack }) => {
         })
       );
       
-      // 🎯 CRITICAL: Preserve SegmentMemory when merging colors
-      // Problem solved: User changes index=4 and index=5 both to white, triggering merge
-      //   - WITHOUT preserving: Only index=4 modification saved, index=5 lost
-      //   - Canvas resize would only apply index=4 change, index=5 reverts to original
-      // Solution: Keep ALL modifications in SegmentMemory, even for merged colors
-      //   - Both (4→white) and (5→white) are preserved
-      //   - Canvas resize correctly re-applies both changes
+      // 🔥 IMPORTANT: Keep SegmentMemory modifications when merging!
+      // The modifications are needed to re-apply color changes when resizing canvas
+      // Do NOT call removeModificationsForColor here
       
-      // 🎯 CRITICAL: Never modify originalPaletteSnapshot after initial generation
-      // It must remain the original palette for canvas resize remapping to work
-      // The merge is reflected in current palette state, not the base snapshot
+      // 🔥 IMPORTANT: Do NOT update originalPaletteSnapshot when merging!
+      // It should remain unchanged to preserve the original color mapping for canvas resize
+      // The merge is already recorded in the current palette and colorMap state
       
       setPalette(newPalette);
       setTileColorMap(newColorMap);
       
-      // Update numColors to match new palette length
+      // 🔥 CRITICAL: Update numColors when merging colors!
+      // Otherwise history will have mismatched numColors vs palette.length
       setNumColors(newPalette.length);
       setPrevNumColors(newPalette.length);
       
@@ -882,6 +909,12 @@ export const MosaicGenerator: React.FC<MosaicGeneratorProps> = ({ onBack }) => {
     // Clear segment memory (user's color modifications)
     segmentMemoryRef.current.clear();
     
+    // 🔥 CRITICAL: Clear all pending timers
+    if (colorChangeTimerRef.current) {
+      clearTimeout(colorChangeTimerRef.current);
+      colorChangeTimerRef.current = null;
+    }
+    
     // Reset history
     resetHistory({ colorMap: [], palette: [] });
     
@@ -906,11 +939,17 @@ export const MosaicGenerator: React.FC<MosaicGeneratorProps> = ({ onBack }) => {
       link.href = url;
       link.click();
       URL.revokeObjectURL(url);
+      
+      // Track SVG export
+      trackExport('mosaic-generator', 'svg', blob.size);
     } else {
       const link = document.createElement('a');
       link.download = 'mosaic-art.png';
       link.href = canvas.toDataURL('image/png');
       link.click();
+      
+      // Track PNG export
+      trackExport('mosaic-generator', 'png');
     }
   };
 
@@ -1212,13 +1251,9 @@ export const MosaicGenerator: React.FC<MosaicGeneratorProps> = ({ onBack }) => {
       // Process transparency
       const { imageData, transparentMask } = processImageDataForTransparency(rawImageData);
 
-      // 🎯 CANVAS RESIZE WORKFLOW - Two-phase color restoration system
-      // Phase 1: Resample using originalPaletteSnapshot (base colors from initial generation)
-      //   - Ensures consistent color mapping regardless of user modifications
-      //   - Example: If original had 7 colors, resample with those same 7 colors
-      // Phase 2: Apply SegmentMemory modifications (see lines below)
-      //   - Re-applies all user color changes on top of resampled base
-      //   - Preserves color merges, manual adjustments, etc.
+      // 🔥 FIX: Use originalPaletteSnapshot (if available) for resampling
+      // This ensures that we're using the original color palette before any user modifications
+      // SegmentMemory will then apply modifications on top of this clean base
       const resamplePalette = originalPaletteSnapshotRef.current.length > 0 ? originalPaletteSnapshotRef.current : palette;
       
       const newColorMap: number[][] = [];
@@ -1274,11 +1309,10 @@ export const MosaicGenerator: React.FC<MosaicGeneratorProps> = ({ onBack }) => {
         })
       );
       
-      // 🎯 Phase 2: Apply SegmentMemory modifications
-      // This restores all user color changes on top of the resampled base palette
-      // Handles: color adjustments, color merges, manual tweaks
+      // CRITICAL: Apply segment memory modifications (if any)
       const hasModifications = segmentMemoryRef.current.size() > 0;
       let finalPalette = newPalette;
+      let finalColorMap = remappedColorMap;
       
       if (hasModifications) {
         finalPalette = segmentMemoryRef.current.applyModificationsToPalette(
@@ -1287,16 +1321,50 @@ export const MosaicGenerator: React.FC<MosaicGeneratorProps> = ({ onBack }) => {
         );
       }
       
+      // 🔥 CRITICAL FIX: Always deduplicate palette (same as in generateMosaic)
+      // This prevents duplicate colors from appearing after canvas resize
+      const colorToIndex = new Map<string, number>();
+      const deduplicatedPalette: string[] = [];
+      const indexMapping: { [key: number]: number } = {};
+      
+      finalPalette.forEach((color, oldIndex) => {
+        if (colorToIndex.has(color)) {
+          // This color already exists, map old index to existing index
+          indexMapping[oldIndex] = colorToIndex.get(color)!;
+        } else {
+          // New unique color
+          const newIndex = deduplicatedPalette.length;
+          deduplicatedPalette.push(color);
+          colorToIndex.set(color, newIndex);
+          indexMapping[oldIndex] = newIndex;
+        }
+      });
+      
+      // If duplicates were found, remap the color map
+      if (deduplicatedPalette.length < finalPalette.length) {
+        finalColorMap = remappedColorMap.map(row =>
+          row.map(oldIndex => {
+            if (oldIndex === -1) return -1; // Preserve transparent
+            return indexMapping[oldIndex] ?? oldIndex;
+          })
+        );
+        finalPalette = deduplicatedPalette;
+      }
+      
       // Update state
-      setTileColorMap(remappedColorMap);
+      setTileColorMap(finalColorMap);
       setPalette(finalPalette);
-      updateColorStats(remappedColorMap, finalPalette);
+      updateColorStats(finalColorMap, finalPalette);
+      
+      // NOTE: Do NOT update originalPaletteSnapshotRef here!
+      // It should only be updated in generateMosaic() when creating a new base palette
+      // Updating it here would pollute the snapshot with user modifications
       
       // 🔥 FIX: Use actual palette length instead of numColors state
       // This ensures history records the correct color count after merges
       // Add to history
       addToHistory({
-        colorMap: remappedColorMap,
+        colorMap: finalColorMap,  // Use finalColorMap (with deduplication applied)
         palette: [...finalPalette],
         mosaicWidth: newWidth,
         mosaicHeight: newHeight,

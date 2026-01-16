@@ -16,6 +16,7 @@ import { vectorizeImage, generateSVG } from './vectorizer/utils/vectorization';
 import { DEFAULT_VALUES, LIMITS } from './vectorizer/constants';
 import { usePreviewManager } from './vectorizer/hooks/usePreviewManager';
 import { mergeColorGroups } from './vectorizer/utils/colorMerging';
+import { trackToolUsage, trackImageUpload, trackExport } from '@/utils/analytics';
 import type { VectorPath, VectorizationConfig } from './vectorizer/utils/vectorization';
 
 type VectorizationMode = 'line' | 'fill' | 'mixed';
@@ -847,6 +848,9 @@ export const VectorizerTool: React.FC<VectorizerToolProps> = ({ onBack }) => {
                       const file = e.target.files?.[0];
                       if (!file) return;
                       
+                      // Track image upload
+                      trackImageUpload('vectorizer-tool', file.size, file.type);
+                      
                       const reader = new FileReader();
                       reader.onload = (readerEvent) => {
                         const img = new Image();
@@ -1208,6 +1212,9 @@ export const VectorizerTool: React.FC<VectorizerToolProps> = ({ onBack }) => {
                           originalImage.height
                         );
                         
+                        // Track copy action
+                        trackToolUsage('vectorizer-tool', 'copy_svg', `${vectorPaths.length} paths`);
+                        
                         // Create a temporary textarea element
                         const textarea = document.createElement('textarea');
                         textarea.value = svg;
@@ -1255,6 +1262,9 @@ export const VectorizerTool: React.FC<VectorizerToolProps> = ({ onBack }) => {
                         a.download = `vectorized-${Date.now()}.svg`;
                         a.click();
                         URL.revokeObjectURL(url);
+                        
+                        // Track download
+                        trackExport('vectorizer-tool', 'svg', blob.size);
                       }}
                       className="flex-1"
                     >

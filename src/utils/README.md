@@ -1,8 +1,51 @@
-# Mosaic Generator Utilities
+# Utility Functions
 
-這個目錄包含馬賽克生成器的核心工具函數，用於提升代碼可維護性和可測試性。
+這個目錄包含手作工具網站的核心工具函數，用於提升代碼可維護性和可測試性。
 
 ## 📁 文件結構
+
+### `analytics.ts`
+Google Analytics 4 整合模組
+
+**主要功能：**
+- 輕量級 GA4 事件追蹤
+- 異步加載，不阻塞頁面渲染
+- 自動錯誤處理
+
+**API：**
+- `initGA()` - 初始化 Google Analytics
+- `trackPageView(pagePath, pageTitle?)` - 追蹤頁面瀏覽
+- `trackToolUsage(toolName, action, label?)` - 追蹤工具使用
+- `trackImageUpload(toolName, fileSize?, fileType?)` - 追蹤圖片上傳
+- `trackExport(toolName, format, fileSize?)` - 追蹤導出操作
+- `trackEvent(eventName, params?)` - 追蹤自定義事件
+
+**使用範例：**
+```typescript
+import { initGA, trackToolUsage, trackImageUpload } from '@/utils/analytics';
+
+// 在 App.tsx 中初始化
+useEffect(() => {
+  initGA();
+}, []);
+
+// 追蹤工具選擇
+trackToolUsage('mosaic-generator', 'tool_selected');
+
+// 追蹤圖片上傳
+trackImageUpload('mosaic-generator', file.size, file.type);
+
+// 追蹤導出
+trackExport('vectorizer-tool', 'svg', blob.size);
+```
+
+**測量 ID**: G-GWJH5XZQ1R
+
+**特點**：
+- ✅ 非侵入式設計，不影響應用性能
+- ✅ 自動錯誤捕獲，失敗時不會中斷應用
+- ✅ 異步腳本加載，不阻塞頁面渲染
+- ✅ TypeScript 類型安全
 
 ### `colorUtils.ts`
 顏色處理相關的工具函數
