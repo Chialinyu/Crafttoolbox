@@ -83,6 +83,7 @@ export const MosaicCanvas = forwardRef<MosaicCanvasHandle, MosaicCanvasProps>(({
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [isPanning, setIsPanning] = useState(false);
   const [lastMousePos, setLastMousePos] = useState({ x: 0, y: 0 });
+  const [hoveredTile, setHoveredTile] = useState<{ x: number; y: number } | null>(null);
 
   /**
    * Draw the mosaic on canvas
@@ -110,8 +111,25 @@ export const MosaicCanvas = forwardRef<MosaicCanvasHandle, MosaicCanvasProps>(({
         const colorIndex = colorMap[y]?.[x];
         if (colorIndex === undefined) continue;
 
-        const tileColor = palette[colorIndex];
         const { px, py } = calculatePixelPosition(x, y, offsetX, offsetY, tileSize, tileSpacing);
+
+        // Handle transparent tiles
+        if (colorIndex === -1) {
+          // Draw transparent tile with rgba(0,0,0,0)
+          ctx.fillStyle = 'rgba(0,0,0,0)';
+          ctx.fillRect(px, py, tileSize, tileSize);
+          
+          // If transparent color group is active, draw highlight border
+          if (activeColorGroup === -1) {
+            ctx.strokeStyle = 'rgba(255, 200, 0, 0.8)'; // Golden highlight
+            ctx.lineWidth = 2;
+            ctx.strokeRect(px + 1, py + 1, tileSize - 2, tileSize - 2);
+          }
+          
+          continue;
+        }
+
+        const tileColor = palette[colorIndex];
 
         // Apply highlighting effect
         let finalColor = tileColor;
@@ -160,6 +178,22 @@ export const MosaicCanvas = forwardRef<MosaicCanvasHandle, MosaicCanvasProps>(({
       ctx.strokeRect(borderWidth / 2, borderWidth / 2, canvas.width - borderWidth, canvas.height - borderWidth);
     }
 
+    // Draw hover indicator (orange border on hovered tile)
+    if (hoveredTile) {
+      const { px, py } = calculatePixelPosition(
+        hoveredTile.x,
+        hoveredTile.y,
+        offsetX,
+        offsetY,
+        tileSize,
+        tileSpacing
+      );
+      
+      ctx.strokeStyle = '#ff8c00'; // Orange color
+      ctx.lineWidth = 2;
+      ctx.strokeRect(px, py, tileSize, tileSize);
+    }
+
     // 🎯 Auto-scale canvas to fit container (original feature)
     if (containerRef.current) {
       const containerWidth = containerRef.current.clientWidth;
@@ -189,6 +223,7 @@ export const MosaicCanvas = forwardRef<MosaicCanvasHandle, MosaicCanvasProps>(({
     tileDepth,
     selectedColorGroup,
     hoveredColorGroup,
+    hoveredTile,
   ]);
 
   /**
@@ -227,6 +262,43 @@ export const MosaicCanvas = forwardRef<MosaicCanvasHandle, MosaicCanvasProps>(({
     if (tileX >= 0 && tileX < mosaicWidth && tileY >= 0 && tileY < mosaicHeight) {
       onClick(tileX, tileY);
     }
+  };
+
+  /**
+   * Handle canvas hover for orange border indicator
+   */
+  const handleCanvasHover = (event: React.MouseEvent<HTMLCanvasElement>) => {
+    if (!canvasRef.current || !containerRef.current) return;
+
+    const canvas = canvasRef.current;
+    const canvasRect = canvas.getBoundingClientRect();
+    const canvasX = event.clientX - canvasRect.left;
+    const canvasY = event.clientY - canvasRect.top;
+    
+    // Convert to canvas coordinates (considering CSS scaling)
+    const scaleX = canvas.width / canvasRect.width;
+    const scaleY = canvas.height / canvasRect.height;
+    const x = canvasX * scaleX;
+    const y = canvasY * scaleY;
+
+    const { offsetX, offsetY } = calculateOffsets(borderEnabled, borderWidth);
+
+    // Calculate hovered tile position
+    const tileX = Math.floor((x - offsetX) / (tileSize + tileSpacing));
+    const tileY = Math.floor((y - offsetY) / (tileSize + tileSpacing));
+
+    if (tileX >= 0 && tileX < mosaicWidth && tileY >= 0 && tileY < mosaicHeight) {
+      setHoveredTile({ x: tileX, y: tileY });
+    } else {
+      setHoveredTile(null);
+    }
+  };
+
+  /**
+   * Handle canvas mouse leave
+   */
+  const handleCanvasLeave = () => {
+    setHoveredTile(null);
   };
 
   /**
@@ -480,6 +552,8 @@ export const MosaicCanvas = forwardRef<MosaicCanvasHandle, MosaicCanvasProps>(({
                     imageRendering: 'pixelated',
                   }}
                   onClick={handleCanvasClick}
+                  onMouseMove={handleCanvasHover}
+                  onMouseLeave={handleCanvasLeave}
                 />
               </div>
             </div>

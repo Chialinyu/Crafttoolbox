@@ -16,6 +16,8 @@ interface ColorPalettePanelProps {
   selectedColorGroup: number | null;
   hoveredColorGroup: number | null;
   showColorPicker: number | null;
+  hasTransparent?: boolean;
+  transparentCount?: number;
   onColorSelect: (index: number) => void;
   onColorHover: (index: number | null) => void;
   onColorChange: (index: number, newColor: string) => void;
@@ -28,6 +30,8 @@ export const ColorPalettePanel: React.FC<ColorPalettePanelProps> = ({
   selectedColorGroup,
   hoveredColorGroup,
   showColorPicker,
+  hasTransparent = false,
+  transparentCount = 0,
   onColorSelect,
   onColorHover,
   onColorChange,
@@ -135,6 +139,61 @@ export const ColorPalettePanel: React.FC<ColorPalettePanelProps> = ({
             );
           })}
         </div>
+
+        {/* Transparent Swatch (if exists) */}
+        {hasTransparent && (
+          <>
+            <div className="border-t pt-3 mt-3">
+              <p className="text-xs text-muted-foreground select-none mb-2">
+                {t('transparentColor')}
+              </p>
+              
+              <div
+                className={`relative p-2 rounded-lg border-2 transition-all cursor-pointer w-fit ${
+                  selectedColorGroup === -1
+                    ? 'border-primary bg-primary/5 shadow-md'
+                    : hoveredColorGroup === -1
+                    ? 'border-primary/50 bg-primary/5'
+                    : 'border-transparent hover:bg-muted/30'
+                }`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  // Clicking transparent swatch deselects all
+                  onColorSelect(-1);
+                }}
+                onMouseEnter={() => onColorHover(-1)}
+                onMouseLeave={() => onColorHover(null)}
+              >
+                <div className="flex flex-col items-center gap-2">
+                  <div 
+                    data-color-swatch
+                    className="relative w-12 h-12 rounded border-2 border-border flex-shrink-0"
+                    style={{
+                      backgroundImage: `
+                        linear-gradient(45deg, #ccc 25%, transparent 25%), 
+                        linear-gradient(-45deg, #ccc 25%, transparent 25%), 
+                        linear-gradient(45deg, transparent 75%, #ccc 75%), 
+                        linear-gradient(-45deg, transparent 75%, #ccc 75%)
+                      `,
+                      backgroundSize: '8px 8px',
+                      backgroundPosition: '0 0, 0 4px, 4px -4px, -4px 0px',
+                      backgroundColor: '#fff'
+                    }}
+                  />
+                  
+                  <div className="flex flex-col items-center gap-0.5">
+                    <div className="text-xs font-mono text-muted-foreground select-text">
+                      {t('transparent')}
+                    </div>
+                    <div className="text-xs text-muted-foreground select-none">
+                      {transparentCount} {t('tiles')}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </>
+        )}
       </CardContent>
     </Card>
   );

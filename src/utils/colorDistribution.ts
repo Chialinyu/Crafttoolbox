@@ -49,6 +49,7 @@ function calculateDeltaE(rgb1: [number, number, number], rgb2: [number, number, 
  * Parse color string to RGB array
  */
 function parseColorToRgb(color: string): [number, number, number] {
+  if (!color) return [0, 0, 0];  // Guard against undefined/null
   if (color.startsWith('rgb(')) {
     // "rgb(255, 128, 0)" format
     const match = color.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/);

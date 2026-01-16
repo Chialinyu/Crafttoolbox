@@ -46,6 +46,10 @@ export const mosaicTranslations = {
   tileSize: { zh: '磁磚大小', en: 'Tile Size' },
   tiles: { zh: '片', en: 'tiles' },
   
+  // Transparency
+  transparentColor: { zh: '透明色票', en: 'Transparent Color' },
+  transparent: { zh: '透明', en: 'Transparent' },
+  
   // Canvas size
   canvasSize: { zh: '畫布大小', en: 'Canvas Size' },
   mosaicWidth: { zh: '寬度（片數）', en: 'Width (tiles)' },

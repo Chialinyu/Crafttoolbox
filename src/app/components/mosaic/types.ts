@@ -23,8 +23,15 @@ export type RgbArray = [number, number, number];
 
 /**
  * 2D array of color indices, representing which color each tile uses
+ * Special value: -1 represents transparent tiles
  */
 export type ColorMap = number[][];
+
+/**
+ * Transparent color constant
+ */
+export const TRANSPARENT_COLOR_INDEX = -1;
+export const TRANSPARENT_COLOR = 'rgba(0,0,0,0)';
 
 // ==================== COMPONENT PROPS ====================
 
@@ -63,6 +70,7 @@ export interface MosaicState {
   originalPaletteSnapshot: HexColor[];
   modifiedColorIndices: Set<number>;
   colorStats: ColorStats[];
+  hasTransparent?: boolean; // Whether the mosaic has transparent tiles
 }
 
 /**
@@ -129,6 +137,8 @@ export interface ColorPalettePanelProps {
   selectedColorGroup: number | null;
   hoveredColorGroup: number | null;
   modifiedColorIndices: Set<number>;
+  hasTransparent?: boolean;
+  transparentCount?: number;
   onColorGroupSelect: (index: number | null) => void;
   onColorGroupHover: (index: number | null) => void;
   onColorChange: ColorChangeHandler;

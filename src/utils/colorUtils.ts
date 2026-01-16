@@ -20,6 +20,7 @@ export const parseRgbString = (rgb: string): [number, number, number] => {
  * @returns HEX color string like "#ff8000"
  */
 export const rgbToHex = (rgb: string): string => {
+  if (!rgb) return '#000000';  // Guard against undefined/null
   if (rgb.startsWith('#')) return rgb;
   
   const [r, g, b] = parseRgbString(rgb);
@@ -252,4 +253,63 @@ export const reducePalette = (
   );
 
   return { reducedColors, mapping: workingMapping };
+};
+
+/**
+ * Process ImageData to handle transparency:
+ * - Fully transparent pixels (alpha === 0) are marked in a mask
+ * - Semi-transparent pixels (alpha 1-254) are composited to white background
+ * - Fully opaque pixels (alpha === 255) are unchanged
+ * 
+ * @param imageData - The image data to process
+ * @param backgroundColor - Background color for alpha compositing (default: white)
+ * @returns Processed image data and transparent mask
+ */
+export const processImageDataForTransparency = (
+  imageData: ImageData,
+  backgroundColor = { r: 255, g: 255, b: 255 }
+): { imageData: ImageData; transparentMask: Uint8Array } => {
+  const data = imageData.data;
+  const transparentMask = new Uint8Array(imageData.width * imageData.height);
+  
+  for (let i = 0, pixelIndex = 0; i < data.length; i += 4, pixelIndex++) {
+    const r = data[i];
+    const g = data[i + 1];
+    const b = data[i + 2];
+    const a = data[i + 3];
+    
+    if (a === 0) {
+      // Fully transparent - mark in mask
+      transparentMask[pixelIndex] = 1;
+      // Don't modify RGB values
+    } else if (a < 255) {
+      // Semi-transparent - alpha compositing to white background
+      const alpha = a / 255;
+      data[i] = Math.round(r * alpha + backgroundColor.r * (1 - alpha));
+      data[i + 1] = Math.round(g * alpha + backgroundColor.g * (1 - alpha));
+      data[i + 2] = Math.round(b * alpha + backgroundColor.b * (1 - alpha));
+      data[i + 3] = 255; // Make fully opaque
+      transparentMask[pixelIndex] = 0;
+    } else {
+      // Fully opaque - no processing needed
+      transparentMask[pixelIndex] = 0;
+    }
+  }
+  
+  return { imageData, transparentMask };
+};
+
+/**
+ * Check if image data contains any transparent pixels
+ * @param imageData - The image data to check
+ * @returns True if any pixel has alpha < 255
+ */
+export const hasTransparency = (imageData: ImageData): boolean => {
+  const data = imageData.data;
+  for (let i = 3; i < data.length; i += 4) {
+    if (data[i] < 255) {
+      return true;
+    }
+  }
+  return false;
 };

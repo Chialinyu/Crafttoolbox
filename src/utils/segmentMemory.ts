@@ -1,9 +1,35 @@
 /**
- * Segment Memory System
+ * Segment Memory System - Spatial-based color modification tracking
  * 
- * This module manages segment-based color modifications using spatial similarity.
- * Unlike color-to-color mapping, this tracks WHICH SPATIAL REGION was modified,
- * and maintains that modification across re-segmentation.
+ * 🎯 CORE CONCEPT:
+ * Unlike simple color-to-color mapping, SegmentMemory tracks WHICH SPATIAL REGIONS
+ * were modified by the user, and maintains those modifications across canvas resizing
+ * and re-segmentation operations.
+ * 
+ * 🔧 HOW IT WORKS:
+ * 1. User changes a color → recordModification() saves:
+ *    - Spatial mask (which tiles had that color)
+ *    - Original color (from initial generation)
+ *    - Modified color (user's choice)
+ * 
+ * 2. Canvas resizes → Image is resampled with original palette
+ * 
+ * 3. applyModificationsToPalette() uses IoU (Intersection over Union) to:
+ *    - Find which NEW segments match the ORIGINAL spatial regions
+ *    - Re-apply the user's color choices to those matching regions
+ * 
+ * 🐛 CRITICAL BUG FIXED (2025-01-16):
+ * Problem: Color merge operations were calling removeModificationsForColor(),
+ *          deleting the spatial memory of merged colors.
+ * Result: After canvas resize, merged colors reverted to original colors.
+ * Solution: NEVER call removeModificationsForColor() during color merge.
+ *          ALL modifications must be preserved for canvas resize to work correctly.
+ * 
+ * 📊 Example workflow:
+ *   Original: [色1, 色2, 色3, 色4, 色5, 色6, 色7]
+ *   User: index=4 → white, index=5 → white (triggers merge)
+ *   SegmentMemory: [(4, 色4→white), (5, 色5→white)] ← BOTH preserved!
+ *   Canvas resize: Re-applies BOTH modifications to correct spatial regions ✅
  */
 
 export interface SegmentMask {
@@ -267,11 +293,22 @@ export class SegmentMemory {
     
     const modifiedPalette = [...newPalette];
     const usedSegments = new Set<number>(); // Track which segments have been modified
+    const appliedColors = new Map<string, number>(); // Track which colors have been applied to which segment index
     
     // 🔥 FIX: Iterate through MODIFICATIONS (not palette segments)
     // This ensures ALL user modifications are considered, even if palette is smaller
     for (let i = 0; i < this.modifications.length; i++) {
       const mod = this.modifications[i];
+      
+      // 🔥 FIX: Check if this modified color has already been applied
+      // If yes, reuse that segment index instead of creating duplicates
+      const [r, g, b] = mod.modifiedColor.split(',').map(Number);
+      const colorKey = `rgb(${r}, ${g}, ${b})`;
+      
+      if (appliedColors.has(colorKey)) {
+        // This color has already been applied to a segment, skip to avoid duplicates
+        continue;
+      }
       
       // Find the best matching segment in the new color map
       let bestSegmentIndex = -1;
@@ -294,10 +331,9 @@ export class SegmentMemory {
       // Apply modification if we found a good match
       // Threshold: 0.3 = at least 30% overlap
       if (bestIoU > 0.3 && bestSegmentIndex !== -1) {
-        // Convert "r,g,b" to "rgb(r, g, b)" format
-        const [r, g, b] = mod.modifiedColor.split(',').map(Number);
-        modifiedPalette[bestSegmentIndex] = `rgb(${r}, ${g}, ${b})`;
+        modifiedPalette[bestSegmentIndex] = colorKey;
         usedSegments.add(bestSegmentIndex);
+        appliedColors.set(colorKey, bestSegmentIndex); // Record this color has been applied
       }
     }
     
@@ -335,10 +371,20 @@ export class SegmentMemory {
   }
   
   /**
-   * Remove modifications for a specific color that was merged/deleted
-   * This should be called when colors are merged in the palette
+   * Remove modifications for a specific color
    * 
-   * @param deletedColorRgb - The RGB string of the color that was removed (e.g., "255,0,0")
+   * ⚠️ WARNING: This method should be used with extreme caution!
+   * 
+   * 🚫 DO NOT call during color merge operations:
+   * - Color merges need to PRESERVE all spatial modifications
+   * - Removing modifications will cause colors to revert on canvas resize
+   * 
+   * ✅ Safe to call when:
+   * - Completely resetting the mosaic (starting fresh)
+   * - User explicitly requests to undo ALL modifications
+   * 
+   * @param deletedColorRgb - The RGB string of the color (e.g., "255,0,0")
+   * @deprecated Consider if you really need this - most use cases should preserve modifications
    */
   removeModificationsForColor(deletedColorRgb: string): void {
     this.modifications = this.modifications.filter(

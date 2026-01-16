@@ -19,6 +19,9 @@
 - [問題 #10: 畫布尺寸改變後Undo導致尺寸錯亂](#問題-10-畫布尺寸改變後undo導致尺寸錯亂)
 - [問題 #11: 合併顏色時使用錯誤的調色盤導致重新分離](#問題-11-合併顏色時使用錯誤的調色盤導致重新分離)
 - [問題 #12: numColors與palette.length不同步](#問題-12-numcolors與palettelength不同步)
+- [問題 #13: PNG透明度支援 - 畫布調整與色票選擇](#問題-13-png透明度支援---畫布調整與色票選擇)
+- [問題 #14: 顏色合併 + 畫布調整後顏色跑回原色](#問題-14-顏色合併--畫布調整後顏色跑回原色)
+- [問題 #15: 合併顏色後調整顏色數量出現重複顏色](#問題-15-合併顏色後調整顏色數量出現重複顏色)
 - [改革 #1: V1 到 V2 模塊化重構](#改革-1-v1-到-v2-模塊化重構)
 
 ---
@@ -1180,7 +1183,7 @@ const reducePaletteByUsage = useCallback((
 1. 圖片 A：用戶修改「天空」為粉色
 2. SegmentMemory 記錄：天空區域 → 粉色
 3. 上傳新圖片 B（完全不同的內容）
-4. 🔥 問題：新圖的某些區域莫名其妙變成粉色
+4. 🔥 問題：新圖的��些區域莫名其妙變成粉色
 5. 原因：SegmentMemory 仍然記錄著圖片 A 的修改
 ```
 
@@ -1341,6 +1344,352 @@ addToHistory({
 
 ---
 
+## 問題 #13: PNG透明度支援 - 畫布調整與色票選擇
+
+### 🎯 核心挑戰
+
+**時間**: 2026-01-15
+
+**功能需求**:
+```
+1. 用戶上傳帶透明度的 PNG 圖片
+2. 系統需要正確處理透明像素（alpha = 0）
+3. 透明格子在畫布上正確顯示和編輯
+4. 色票面板顯示透明色票，支持選擇和繪製
+5. 調整畫布大小時透明區域不能變成黑色
+```
+
+### 🐛 Bug #1: 調整畫布大小時透明格變黑格
+
+**問題描述**:
+```
+1. 上傳帶透明區域的 PNG 圖片 → 透明格子正確顯示
+2. 調整畫布寬度或高度
+3. 🔥 問題：原本透明的格子變成黑色格子
+4. 但調整顏色數量後又恢復正常（變回透明）
+```
+
+**根本原因**:
+```typescript
+// ❌ handleCanvasSizeChange 重映射邏輯錯誤
+const remappedColorMap = newColorMap.map(row =>
+  row.map(oldIndex => oldToNewIndex.get(oldIndex) ?? 0)
+);
+
+// 問題：
+// - 透明格子索引為 -1
+// - oldToNewIndex.get(-1) 返回 undefined
+// - ?? 0 將其變成 0（黑色索引）
+```
+
+**解決方案**:
+```typescript
+// ✅ MosaicGeneratorV2.tsx:1195-1200
+const remappedColorMap = newColorMap.map(row =>
+  row.map(oldIndex => {
+    if (oldIndex === -1) return -1;  // ✅ 保留透明索引
+    return oldToNewIndex.get(oldIndex) ?? 0;
+  })
+);
+```
+
+---
+
+### 🐛 Bug #2: 點擊透明色票無法選中並繪製透明
+
+**問題描述**:
+```
+1. 上傳帶透明區域的 PNG → 色票面板顯示透明色票
+2. 點擊透明色票
+3. 🔥 問題：沒有反應，無法選中
+4. 🔥 問題：畫布上透明格子沒有高光顯示
+5. 🔥 問題：無法用透明色票繪製新的透明格子
+```
+
+**根本原因 1 - 選擇邏輯**:
+```typescript
+// ❌ 錯誤邏輯
+onColorSelect={(index) => {
+  if (index === -1) {
+    setSelectedColorGroup(null);  // ❌ 直接取消選擇
+    return;
+  }
+  // ...
+}}
+
+// 問題：點擊透明色票時直接清空選擇，無法選中
+```
+
+**解決方案 1**:
+```typescript
+// ✅ MosaicGeneratorV2.tsx:1472-1485
+onColorSelect={(index) => {
+  // Allow selecting transparent swatch (-1) to paint transparency
+  const newIndex = selectedColorGroup === index ? null : index;
+  setSelectedColorGroup(newIndex);  // ✅ 允許選中 -1
+  
+  // Don't show color picker for transparent swatch
+  if (index === -1) {
+    setShowColorPicker(null);
+  } else if (showColorPicker !== null) {
+    setShowColorPicker(newIndex);
+  }
+}}
+```
+
+**根本原因 2 - 透明格子高光**:
+```typescript
+// ❌ MosaicCanvas.tsx 錯誤邏輯
+if (colorIndex === -1) {
+  ctx.fillStyle = 'rgba(0,0,0,0)';
+  ctx.fillRect(px, py, tileSize, tileSize);
+  continue;  // ❌ 直接跳過，沒有檢查是否需要高光
+}
+```
+
+**解決方案 2**:
+```typescript
+// ✅ MosaicCanvas.tsx:117-129
+if (colorIndex === -1) {
+  // Draw transparent tile
+  ctx.fillStyle = 'rgba(0,0,0,0)';
+  ctx.fillRect(px, py, tileSize, tileSize);
+  
+  // If transparent color group is active, draw highlight border
+  if (activeColorGroup === -1) {
+    ctx.strokeStyle = 'rgba(255, 200, 0, 0.8)';  // ✅ 金黃色高光
+    ctx.lineWidth = 2;
+    ctx.strokeRect(px + 1, py + 1, tileSize - 2, tileSize - 2);
+  }
+  
+  continue;
+}
+```
+
+### 📊 驗證結果
+
+**測試場景**:
+
+| 操作 | 修復前 | 修復後 |
+|-----|--------|--------|
+| 調整畫布大小 | 透明→黑色 ❌ | 保持透明 ✅ |
+| 點擊透明色票 | 無法選中 ❌ | 正確選中 ✅ |
+| 透明格子高光 | 無高光 ❌ | 金黃色高光 ✅ |
+| 繪製透明格子 | 無法繪製 ❌ | 正常繪製 ✅ |
+
+### 🎓 經驗教訓
+
+1. **特殊索引處理**: -1 作為透明索引，在所有重映射邏輯中都要特殊處理
+2. **完整交互邏輯**: 選中、高光、繪製都要支援透明色票
+3. **視覺反饋重要**: 金黃色高光幫助用戶識別選中的透明格子
+4. **防禦性編程**: 處理索引時要檢查特殊值（-1, null, undefined）
+
+---
+
+## 問題 #14: 顏色合併 + 畫布調整後顏色跑回原色
+
+### 🔴 問題描述
+
+**時間**: 2026-01-16
+
+**現象**:
+```
+1. 上傳圖片 → 自動生成 7 色調色盤
+2. 用戶將索引 4 和 5 兩個淺色改為白色（觸發自動合併）
+3. 調整畫布大小（例如 40x40 → 50x50）
+4. 🔥 問題：原本白色的區域變回原來的淺色！
+```
+
+**用戶反饋**: "我把兩個顏色都改成白色了，為什麼改畫布大小後又變回去？"
+
+### 🔍 根本原因鏈
+
+這個 bug 有四個相互關聯的根本原因：
+
+#### 原因 1: Color Picker 雙重觸發
+瀏覽器 Color Picker 點擊確認會觸發兩次 onChange 事件
+
+#### 原因 2: 防抖機制失效
+時間戳防抖無法防止第二次呼叫（間隔可能 > 50ms）
+
+#### 原因 3: SegmentMemory 被刪除
+合併顏色時錯誤地調用 removeModificationsForColor()，導致空間記憶丟失
+
+#### 原因 4: originalPaletteSnapshot 被更新
+合併時錯誤更新了原始基準，導致畫布調整時使用錯誤的基準
+
+### ✅ 最終解決方案
+
+#### 解決方案 1: 使用狀態比較代替時間戳防抖
+```typescript
+if (palette[colorIndex] === newColorRgb) {
+  return;  // ✅ 顏色已匹配，直接返回
+}
+```
+
+#### 解決方案 2: 永不刪除 SegmentMemory
+移除所有 removeModificationsForColor() 調用，保留所有空間修改記錄
+
+#### 解決方案 3: 永不更新 originalPaletteSnapshot
+確保原始快照永遠是初始生成的調色盤，合併操作不影響基準
+
+### 📊 驗證結果
+
+| 操作 | 修復前 | 修復後 |
+|-----|--------|--------|
+| 改色 index=4,5→白(合併) → 調整畫布 | 只有4白，5跑色 ❌ | 都是白色 ✅ |
+| 快速點擊顏色選擇器 | 觸發多次合併 ❌ | 只執行一次 ✅ |
+| 改3個顏色為白 → 調整畫布 | 部分跑色 ❌ | 全部保留 ✅ |
+
+### 🎓 經驗教訓
+
+1. **State Comparison > Timestamp**: 狀態比較比時間戳更可靠
+2. **Preserve All Memory**: 空間記憶系統不應刪除任何記錄
+3. **Immutable Baseline**: 基準狀態應該永不改變
+4. **Two-Phase System**: 基準(snapshot) + 修改(memory) 分層設計
+
+---
+
+## 問題 #15: 合併顏色後調整顏色數量出現重複顏色
+
+### 🔴 問題描述
+
+**時間**: 2026-01-16
+
+**現象**:
+```
+1. 上傳圖片 → 自動生成調色盤（例如 7 色）
+2. 用戶合併兩個白色 → 調色盤減少為 6 色
+3. 用戶合併兩個膚色 → 調色盤減少為 5 色
+4. 用戶調整顏色數量（例如從 7→8）
+5. 🔥 問題：調色盤中出現兩個完全相同的白色 #ffffff！
+```
+
+**用戶反饋**: "同個顏色不該出現兩次，我剛合併了兩個白色，調整顏色數量後為什麼又出現兩個白色？"
+
+### 🔍 根本原因
+
+**SegmentMemory 記錄了兩條白色修改**：
+```typescript
+// 用戶操作
+1. 將 segment 4 改為白色 → SegmentMemory: [(4, 原色A→white)]
+2. 將 segment 5 改為白色 → SegmentMemory: [(4, 原色A→white), (5, 原色B→white)]
+
+// 調整顏色數量時
+3. generateMosaic() 重新生成調色盤
+4. applyModificationsToPalette() 遍歷所有修改記錄：
+   - 第一條：找到最佳匹配 segment=2 → 改為 white
+   - 第二條：找到另一個最佳匹配 segment=5 → 也改為 white
+   
+結果：調色盤中出現兩個 rgb(255, 255, 255) ❌
+```
+
+**核心問題**：
+- SegmentMemory 記錄的是「空間區域的顏色修改」
+- 兩個不同的空間區域可以改成同一個顏色
+- 但調色盤中不應該有重複的顏色項目
+- `applyModificationsToPalette` 沒有檢查是否已經應用過相同顏色
+
+### ✅ 最終解決方案
+
+**在 segmentMemory.ts 中添加顏色去重邏輯**：
+
+```typescript
+// ✅ segmentMemory.ts:L286-L337
+applyModificationsToPalette(
+  newColorMap: number[][],
+  newPalette: string[]
+): string[] {
+  if (this.modifications.length === 0) {
+    return newPalette;
+  }
+  
+  const modifiedPalette = [...newPalette];
+  const usedSegments = new Set<number>();
+  const appliedColors = new Map<string, number>(); // 🔥 NEW: 追蹤已應用的顏色
+  
+  for (let i = 0; i < this.modifications.length; i++) {
+    const mod = this.modifications[i];
+    
+    // 🔥 FIX: 檢查這個顏色是否已經應用過
+    const [r, g, b] = mod.modifiedColor.split(',').map(Number);
+    const colorKey = `rgb(${r}, ${g}, ${b})`;
+    
+    if (appliedColors.has(colorKey)) {
+      continue;  // ✅ 跳過重複顏色，避免創建副本
+    }
+    
+    // 找到最佳匹配的 segment
+    let bestSegmentIndex = -1;
+    let bestIoU = 0;
+    
+    for (let segmentIndex = 0; segmentIndex < newPalette.length; segmentIndex++) {
+      if (usedSegments.has(segmentIndex)) continue;
+      
+      const newSegmentMask = createSegmentMask(newColorMap, segmentIndex);
+      const iou = calculateSegmentIoU(mod.segmentMask, newSegmentMask);
+      
+      if (iou > bestIoU) {
+        bestIoU = iou;
+        bestSegmentIndex = segmentIndex;
+      }
+    }
+    
+    // 應用修改
+    if (bestIoU > 0.3 && bestSegmentIndex !== -1) {
+      modifiedPalette[bestSegmentIndex] = colorKey;
+      usedSegments.add(bestSegmentIndex);
+      appliedColors.set(colorKey, bestSegmentIndex); // 🔥 NEW: 記錄已應用
+    }
+  }
+  
+  return modifiedPalette;
+}
+```
+
+### 🔧 修改邏輯
+
+**Before**:
+```typescript
+// ❌ 舊邏輯：無檢查，直接應用所有修改
+for (modification in modifications) {
+  找最佳匹配 → 應用顏色  // 可能創建重複顏色
+}
+```
+
+**After**:
+```typescript
+// ✅ 新邏輯：檢查重複，跳過已應用的顏色
+appliedColors = Map<colorKey, segmentIndex>
+
+for (modification in modifications) {
+  if (appliedColors.has(modification.color)) {
+    continue;  // 跳過重複
+  }
+  找最佳匹配 → 應用顏色
+  appliedColors.set(modification.color, segmentIndex)
+}
+```
+
+### 📊 驗證結果
+
+| 操作流程 | 修復前 | 修復後 |
+|---------|--------|--------|
+| 合併兩個白色 → 調整顏色數量 | 出現兩個 #ffffff ❌ | 只有一個白色 ✅ |
+| 合併兩個膚色 + 兩個白色 → 調整顏色數量 | 重複顏色 ❌ | 無重複 ✅ |
+| 合併後調整顏色數量多次 | 重複累積 ❌ | 始終無重複 ✅ |
+
+### 🎓 經驗教訓
+
+1. **修改記錄 ≠ 最終狀態**: SegmentMemory 記錄修改歷史，但最終調色盤應該是去重的
+2. **空間映射 vs 顏色唯一性**: 
+   - 空間記憶系統追蹤「哪些區域改了什麼顏色」（可能有重複）
+   - 調色盤要求「每個顏色只出現一次」（必須去重）
+3. **先到先得策略**: 第一個匹配到的修改佔用顏色位，後續相同顏色的修改跳過
+4. **Map 追蹤**: 使用 `Map<colorKey, segmentIndex>` 高效檢查顏色是否已應用
+
+---
+
 ## 改革 #1: V1 到 V2 模塊化重構
 
 ### 🎯 改革動機
@@ -1365,7 +1714,7 @@ addToHistory({
 
 ## 🎯 總結
 
-### 12 個重大問題分類
+### 15 個重大問題分類
 
 #### 核心設計問題
 1. ✅ 問題 #1: ColorMap Index Mapping - 調色後改尺寸不跑色
@@ -1385,6 +1734,9 @@ addToHistory({
 9. ✅ 問題 #8: 用戶修改的顏色被移除
 10. ✅ 問題 #9: 舊圖 SegmentMemory 污染新圖
 11. ✅ 問題 #11: 合併顏色後改尺寸重新分離
+12. ✅ 問題 #13: PNG透明度支援 - 畫布調整與色票選擇
+13. ✅ 問題 #14: 顏色合併 + 畫布調整後顏色跑回原色
+14. ✅ 問題 #15: 合併顏色後調整顏色數量出現重複顏色
 
 ### 核心設計哲學
 
@@ -1392,8 +1744,11 @@ addToHistory({
 2. **Spatial Memory**: 空間記憶優於顏色映射
 3. **Single Source of Truth**: palette.length 是唯一真相
 4. **Closure Awareness**: 立即捕獲，延遲執行
+5. **Immutable Baseline**: 基準狀態永不改變（originalPaletteSnapshot）
+6. **Two-Phase System**: 基準 + 修改分層設計（Snapshot + SegmentMemory）
+7. **Deduplication**: 調色盤必須去重，即使修改記錄可能重複
 
 ---
 
-**最後更新**: 2026-01-13  
+**最後更新**: 2026-01-16  
 **維護者**: 這些問題和解法是寶貴的經驗，應該永久保留
