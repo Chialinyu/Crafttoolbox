@@ -32,7 +32,8 @@
 
 **時間**: 2026-01-10
 
-**核心概念**: 
+**核心概念**:
+
 ```typescript
 // colorMap 存儲的是「調色盤索引」，而不是「顏色值」
 tileColorMap: number[][]  // 每個元素是 palette 的索引 (0, 1, 2, 3...)
@@ -46,6 +47,7 @@ palette[2] = "#E8B4B8"   // 第2號顏色是塵粉玫瑰色
 ### 為什麼這樣設計？
 
 **錯誤方案（直接存顏色值）**:
+
 ```typescript
 // ❌ 方案 A: 直接存顏色字符串
 colorMap: string[][]  // [["#E8B4B8", "#E8D5C4", ...], ...]
@@ -58,6 +60,7 @@ colorMap: string[][]  // [["#E8B4B8", "#E8D5C4", ...], ...]
 ```
 
 **正確方案（索引映射）**:
+
 ```typescript
 // ✅ 方案 B: 存調色盤索引
 colorMap: number[][]  // [[2, 0, 1, ...], ...]
@@ -73,54 +76,72 @@ palette: string[]     // ["#E8B4B8", "#E8D5C4", "#A89F91", "#B4C7B4"]
 ### 關鍵操作邏輯
 
 #### 1. 改變調色盤顏色
+
 ```typescript
 // 用戶改變第2號顏色
-const handleColorChange = (colorIndex: number, newColor: string) => {
+const handleColorChange = (
+  colorIndex: number,
+  newColor: string,
+) => {
   const newPalette = [...palette];
-  newPalette[colorIndex] = newColor;  // ✅ O(1) 操作
+  newPalette[colorIndex] = newColor; // ✅ O(1) 操作
   setPalette(newPalette);
   // colorMap 不需要改變！所有使用索引2的磁磚自動使用新顏色
 };
 ```
 
 #### 2. 改變畫布大小（關鍵！）
+
 ```typescript
-const handleSizeChange = (newWidth: number, newHeight: number) => {
+const handleSizeChange = (
+  newWidth: number,
+  newHeight: number,
+) => {
   // 重新取樣圖片
   const newColorMap = resampleImage(image, newWidth, newHeight);
-  
+
   // 🔥 關鍵：使用「當前」的 palette（包含用戶的修改）
   // 而不是重新生成新的 palette
   for (let y = 0; y < newHeight; y++) {
     for (let x = 0; x < newWidth; x++) {
       const pixel = getPixel(image, x, y);
       // 找到當前調色盤中最接近的顏色
-      const closestIndex = findClosestColor(pixel, palette);  // ✅ 使用現有 palette
+      const closestIndex = findClosestColor(pixel, palette); // ✅ 使用現有 palette
       newColorMap[y][x] = closestIndex;
     }
   }
-  
+
   setTileColorMap(newColorMap);
   // palette 保持不變 → 用戶調整的顏色不會丟失！
 };
 ```
 
 #### 3. 合併顏色
+
 ```typescript
-const handleMergeColors = (colorIndices: number[], targetColor: string) => {
+const handleMergeColors = (
+  colorIndices: number[],
+  targetColor: string,
+) => {
   // 創建新調色盤（移除被合併的顏色）
-  const newPalette = palette.filter((_, i) => !colorIndices.slice(1).includes(i));
-  newPalette[colorIndices[0]] = targetColor;  // 保留第一個，設為目標顏色
-  
-  // 重映射 colorMap 索引
-  const indexMapping = createIndexMapping(colorIndices, palette.length, newPalette.length);
-  const newColorMap = tileColorMap.map(row => 
-    row.map(oldIndex => indexMapping[oldIndex])
+  const newPalette = palette.filter(
+    (_, i) => !colorIndices.slice(1).includes(i),
   );
-  
+  newPalette[colorIndices[0]] = targetColor; // 保留第一個，設為目標顏色
+
+  // 重映射 colorMap 索引
+  const indexMapping = createIndexMapping(
+    colorIndices,
+    palette.length,
+    newPalette.length,
+  );
+  const newColorMap = tileColorMap.map((row) =>
+    row.map((oldIndex) => indexMapping[oldIndex]),
+  );
+
   setPalette(newPalette);
   setTileColorMap(newColorMap);
-  setNumColors(newPalette.length);  // 🔥 關鍵：同步 numColors
+  setNumColors(newPalette.length); // 🔥 關鍵：同步 numColors
 };
 ```
 
@@ -140,6 +161,7 @@ const handleMergeColors = (colorIndices: number[], targetColor: string) => {
 **時間**: 2026-01-10
 
 **現象**:
+
 ```
 1. 用戶上傳圖片 → 生成 40x40 馬賽克
 2. 用戶調整調色盤：將第2號顏色從 #E8D5C4 改為 #FF0000（紅色）
@@ -156,14 +178,14 @@ const handleMergeColors = (colorIndices: number[], targetColor: string) => {
 ```typescript
 // 想法：記錄用戶改了哪些顏色
 const colorMapping = {
-  "#E8D5C4": "#FF0000",  // 原色 → 新色
+  "#E8D5C4": "#FF0000", // 原色 → 新色
 };
 
 // 改變畫布大小時應用映射
 const handleSizeChange = () => {
   const newPalette = generatePaletteFromImage(image, numColors);
-  const mappedPalette = newPalette.map(color => 
-    colorMapping[color] || color
+  const mappedPalette = newPalette.map(
+    (color) => colorMapping[color] || color,
   );
   setPalette(mappedPalette);
 };
@@ -181,15 +203,15 @@ const handleSizeChange = () => {
 const indexColorMap = {
   0: "#E8B4B8",
   1: "#E8D5C4",
-  2: "#FF0000",  // 用戶修改
+  2: "#FF0000", // 用戶修改
   3: "#B4C7B4",
 };
 
 // 改變畫布大小時
 const handleSizeChange = () => {
   const newPalette = generatePaletteFromImage(image, numColors);
-  const restoredPalette = newPalette.map((_, i) => 
-    indexColorMap[i] || newPalette[i]
+  const restoredPalette = newPalette.map(
+    (_, i) => indexColorMap[i] || newPalette[i],
   );
   setPalette(restoredPalette);
 };
@@ -206,13 +228,15 @@ const handleSizeChange = () => {
 // 想法：儲存用戶修改前的完整狀態
 const originalState = {
   palette: [...palette],
-  colorMap: colorMap.map(row => [...row]),
+  colorMap: colorMap.map((row) => [...row]),
 };
 
 // 改變畫布大小時
 const handleSizeChange = () => {
   // 回復到原始狀態，然後重新取樣
-  const newColorMap = resampleWithOriginalPalette(originalState.palette);
+  const newColorMap = resampleWithOriginalPalette(
+    originalState.palette,
+  );
   // ...
 };
 
@@ -224,44 +248,54 @@ const handleSizeChange = () => {
 
 ### ✅ 最終解決方案
 
-**核心洞察**: 
+**核心洞察**:
+
 > 不要儲存「哪些顏色被修改」，而是確保「改變畫布大小時使用現有的palette」
 
 ```typescript
 // src/app/components/MosaicGeneratorV2.tsx - Line 1113
 
-const handleSizeChange = useCallback((newWidth: number, newHeight: number) => {
-  // ... 其他邏輯 ...
-  
-  // 🔥 FIX: Use current palette (reflects merged colors) instead of originalPaletteSnapshot
-  // This prevents merged colors from being re-separated during resize
-  // Segment memory still works because it matches based on spatial position, not color index
-  const resamplePalette = palette;  // ✅ 使用當前的 palette，包含所有用戶修改
-  
-  const newColorMap: number[][] = [];
-  for (let y = 0; y < newHeight; y++) {
-    newColorMap[y] = [];
-    for (let x = 0; x < newWidth; x++) {
-      const srcX = Math.floor((x / newWidth) * image.width);
-      const srcY = Math.floor((y / newHeight) * image.height);
-      
-      const pixel = getPixel(imageData, srcX, srcY);
-      const [r, g, b] = pixel;
-      
-      // 找到當前調色盤中最接近的顏色
-      const colorIndex = findClosestColor(r, g, b, resamplePalette);  // ✅ 使用現有 palette
-      newColorMap[y][x] = colorIndex;
+const handleSizeChange = useCallback(
+  (newWidth: number, newHeight: number) => {
+    // ... 其他邏輯 ...
+
+    // 🔥 FIX: Use current palette (reflects merged colors) instead of originalPaletteSnapshot
+    // This prevents merged colors from being re-separated during resize
+    // Segment memory still works because it matches based on spatial position, not color index
+    const resamplePalette = palette; // ✅ 使用當前的 palette，包含所有用戶修改
+
+    const newColorMap: number[][] = [];
+    for (let y = 0; y < newHeight; y++) {
+      newColorMap[y] = [];
+      for (let x = 0; x < newWidth; x++) {
+        const srcX = Math.floor((x / newWidth) * image.width);
+        const srcY = Math.floor((y / newHeight) * image.height);
+
+        const pixel = getPixel(imageData, srcX, srcY);
+        const [r, g, b] = pixel;
+
+        // 找到當前調色盤中最接近的顏色
+        const colorIndex = findClosestColor(
+          r,
+          g,
+          b,
+          resamplePalette,
+        ); // ✅ 使用現有 palette
+        newColorMap[y][x] = colorIndex;
+      }
     }
-  }
-  
-  setTileColorMap(newColorMap);
-  setPalette(resamplePalette);  // ✅ palette 保持不變
-  
-  // ...
-}, [palette, image]);  // ✅ 依賴 palette，確保使用最新值
+
+    setTileColorMap(newColorMap);
+    setPalette(resamplePalette); // ✅ palette 保持不變
+
+    // ...
+  },
+  [palette, image],
+); // ✅ 依賴 palette，確保使用最新值
 ```
 
 **為什麼這樣有效**:
+
 ```
 1. colorMap 存的是索引，不是顏色值
 2. 改變畫布大小 → 重新生成 colorMap
@@ -274,12 +308,12 @@ const handleSizeChange = useCallback((newWidth: number, newHeight: number) => {
 
 **測試場景**:
 
-| 操作 | 錯誤方案 | 正確方案 |
-|-----|---------|---------|
-| 調色 → 改尺寸 | ❌ 顏色重置 | ✅ 顏色保持 |
-| 合併 → 改尺寸 | ❌ 分離回4色 | ✅ 保持合併 |
-| 增色 → 調色 → 改尺寸 | ❌ 混亂 | ✅ 正確 |
-| 減色 → 改尺寸 | ❌ 索引錯誤 | ✅ 正確 |
+| 操作                 | 錯誤方案     | 正確方案    |
+| -------------------- | ------------ | ----------- |
+| 調色 → 改尺寸        | ❌ 顏色重置  | ✅ 顏色保持 |
+| 合併 → 改尺寸        | ❌ 分離回4色 | ✅ 保持合併 |
+| 增色 → 調色 → 改尺寸 | ❌ 混亂      | ✅ 正確     |
+| 減色 → 改尺寸        | ❌ 索引錯誤  | ✅ 正確     |
 
 ### 🎓 經驗教訓
 
@@ -297,6 +331,7 @@ const handleSizeChange = useCallback((newWidth: number, newHeight: number) => {
 **時間**: 2026-01-11
 
 **現象**:
+
 ```
 1. 初始狀態：4 色調色盤，numColors = 4
 2. 用戶合併顏色 2 和 3 → 變成 3 色
@@ -305,6 +340,7 @@ const handleSizeChange = useCallback((newWidth: number, newHeight: number) => {
 ```
 
 **錯誤日誌**:
+
 ```
 ERROR: Cannot read property 'color' of undefined
 → 因為 selectedColorGroup = 3，但 palette.length = 3（索引只到 2）
@@ -319,7 +355,7 @@ const handleMergeColors = () => {
   // 合併邏輯...
   const newPalette = mergeColors(palette, selectedIndices);
   setPalette(newPalette);
-  
+
   // ❌ 忘記更新 numColors
   // setNumColors(newPalette.length);  // 漏掉這行！
 };
@@ -333,7 +369,7 @@ const handleMergeColors = () => {
 addToHistory({
   palette: newPalette,
   colorMap: newColorMap,
-  numColors: newPalette.length,  // ✅ 這裡記錄了
+  numColors: newPalette.length, // ✅ 這裡記錄了
   // ...
 });
 
@@ -361,7 +397,7 @@ setPrevNumColors(newPalette.length);
 addToHistory({
   colorMap: newColorMap,
   palette: newPalette,
-  numColors: newPalette.length,  // ✅ 使用 palette.length
+  numColors: newPalette.length, // ✅ 使用 palette.length
   // ...
 });
 
@@ -369,7 +405,7 @@ addToHistory({
 addToHistory({
   colorMap: newColorMap,
   palette: newPalette,
-  numColors: newPalette.length,  // ✅ 使用 palette.length
+  numColors: newPalette.length, // ✅ 使用 palette.length
   // ...
 });
 
@@ -377,7 +413,7 @@ addToHistory({
 addToHistory({
   colorMap: newColorMap,
   palette: finalPalette,
-  numColors: finalPalette.length,  // ✅ 使用實際長度
+  numColors: finalPalette.length, // ✅ 使用實際長度
   // ...
 });
 
@@ -393,17 +429,17 @@ const applyStateFromHistory = (state: any) => {
   setTileColorMap(state.colorMap);
   setPalette(state.palette);
   setNumColors(state.numColors);
-  setPrevNumColors(state.numColors);  // ✅ 也更新 prevNumColors
-  
+  setPrevNumColors(state.numColors); // ✅ 也更新 prevNumColors
+
   // CRITICAL: Reset selectedColorGroup if it's out of bounds
   // This can happen when undoing a color merge operation
-  setSelectedColorGroup(prev => {
+  setSelectedColorGroup((prev) => {
     if (prev !== null && prev >= state.palette.length) {
-      return null;  // ✅ 越界則清空選擇
+      return null; // ✅ 越界則清空選擇
     }
     return prev;
   });
-  
+
   // ...
 };
 ```
@@ -412,12 +448,12 @@ const applyStateFromHistory = (state: any) => {
 
 **測試場景**:
 
-| 操作 | 修復前 | 修復後 |
-|-----|--------|--------|
-| 合併 4→3 色 | numColors=4, palette.length=3 ❌ | 一致 ✅ |
-| Undo 合併 | selectedColorGroup=3 越界 ❌ | 自動清空 ✅ |
-| Redo 合併 | 狀態混亂 ❌ | 正確 ✅ |
-| 連續合併 2 次 | numColors 錯誤累積 ❌ | 正確 ✅ |
+| 操作          | 修復前                           | 修復後      |
+| ------------- | -------------------------------- | ----------- |
+| 合併 4→3 色   | numColors=4, palette.length=3 ❌ | 一致 ✅     |
+| Undo 合併     | selectedColorGroup=3 越界 ❌     | 自動清空 ✅ |
+| Redo 合併     | 狀態混亂 ❌                      | 正確 ✅     |
+| 連續合併 2 次 | numColors 錯誤累積 ❌            | 正確 ✅     |
 
 ### 🎓 經驗教訓
 
@@ -435,16 +471,17 @@ const applyStateFromHistory = (state: any) => {
 **時間**: 2026-01-11
 
 **現象**:
+
 ```typescript
 const handleColorChange = (index, newColor) => {
   const newPalette = [...palette];
   newPalette[index] = newColor;
   setPalette(newPalette);
-  
+
   // 防抖，100ms 後記錄歷史
   setTimeout(() => {
     addToHistory({
-      colorMap: tileColorMap,  // 🔥 問題！這是閉包捕獲的「舊值」
+      colorMap: tileColorMap, // 🔥 問題！這是閉包捕獲的「舊值」
       palette: newPalette,
       // ...
     });
@@ -472,7 +509,7 @@ useEffect(() => {
 const handleColorChange = () => {
   setTimeout(() => {
     addToHistory({
-      colorMap: colorMapRef.current,  // ❌ 仍然是閉包問題
+      colorMap: colorMapRef.current, // ❌ 仍然是閉包問題
       // ...
     });
   }, 100);
@@ -486,7 +523,7 @@ const handleColorChange = () => {
 ```typescript
 const handleColorChange = () => {
   setTimeout(() => {
-    setHistory(prev => {
+    setHistory((prev) => {
       // 這裡可以訪問最新的 history
       // 但無法訪問最新的 tileColorMap ❌
     });
@@ -503,23 +540,26 @@ const handleColorChange = () => {
 ```typescript
 // src/app/components/MosaicGeneratorV2.tsx - Line 692
 
-const handleColorChange = (colorIndex: number, newColor: string) => {
+const handleColorChange = (
+  colorIndex: number,
+  newColor: string,
+) => {
   // 更新調色盤
   const newPalette = [...palette];
   newPalette[colorIndex] = newColor;
   setPalette(newPalette);
-  
+
   // 防抖
   if (colorChangeTimerRef.current) {
     clearTimeout(colorChangeTimerRef.current);
   }
-  
+
   // 🔥 CRITICAL: Capture colorMap NOW (outside setTimeout) to avoid closure issues
-  const colorMapCopy = tileColorMap.map(row => [...row]);  // ✅ 立即深拷貝
-  
+  const colorMapCopy = tileColorMap.map((row) => [...row]); // ✅ 立即深拷貝
+
   colorChangeTimerRef.current = setTimeout(() => {
     addToHistory({
-      colorMap: colorMapCopy,  // ✅ 使用捕獲的副本，不是閉包變量
+      colorMap: colorMapCopy, // ✅ 使用捕獲的副本，不是閉包變量
       palette: newPalette,
       numColors: newPalette.length,
       // ...
@@ -529,6 +569,7 @@ const handleColorChange = (colorIndex: number, newColor: string) => {
 ```
 
 **為什麼有效**:
+
 ```
 1. 立即深拷貝 colorMap（在 setTimeout 外）
 2. setTimeout 捕獲的是「拷貝」，不是「引用」
@@ -540,11 +581,11 @@ const handleColorChange = (colorIndex: number, newColor: string) => {
 
 **測試場景**:
 
-| 場景 | 修復前 | 修復後 |
-|-----|--------|--------|
+| 場景               | 修復前                    | 修復後                   |
+| ------------------ | ------------------------- | ------------------------ |
 | 快速改變顏色 A→B→C | 記錄 3 次相同 colorMap ❌ | 正確記錄 3 個不同狀態 ✅ |
-| 改色後立即 Undo | Undo 到錯誤狀態 ❌ | 正確 Undo ✅ |
-| 連續合併顏色 | History 混亂 ❌ | 正確 ✅ |
+| 改色後立即 Undo    | Undo 到錯誤狀態 ❌        | 正確 Undo ✅             |
+| 連續合併顏色       | History 混亂 ❌           | 正確 ✅                  |
 
 ### 🎓 經驗教訓
 
@@ -562,6 +603,7 @@ const handleColorChange = (colorIndex: number, newColor: string) => {
 **時間**: 2026-01-11
 
 **現象**:
+
 ```
 1. 用戶上傳圖片 A → 自動 40x40
 2. 用戶手動改為 14x7
@@ -578,9 +620,9 @@ const handleColorChange = (colorIndex: number, newColor: string) => {
 ```typescript
 const handleImageUpload = (newImage) => {
   setImage(newImage);
-  setMosaicWidth(40);  // ❌ 直接設置
+  setMosaicWidth(40); // ❌ 直接設置
   setMosaicHeight(40);
-  
+
   // 觸發 useEffect 重新生成馬賽克
 };
 
@@ -594,9 +636,9 @@ const handleImageUpload = (newImage) => {
 ```typescript
 useEffect(() => {
   if (!image) return;
-  
+
   // 生成馬賽克...
-}, [image, numColors, mosaicWidth, mosaicHeight]);  // ❌ 添加尺寸依賴
+}, [image, numColors, mosaicWidth, mosaicHeight]); // ❌ 添加尺寸依賴
 
 // ❌ 失敗原因：
 // 1. 用戶手動改變尺寸 → 觸發重新生成（錯誤！）
@@ -618,42 +660,54 @@ const [imageChanged, setImageChanged] = useState(false);
 const handleImageUpload = (file) => {
   const img = loadImage(file);
   setImage(img);
-  setImageChanged(true);  // ✅ 標記為新圖
-  
+  setImageChanged(true); // ✅ 標記為新圖
+
   // 計算新圖的目標尺寸
-  const targetWidth = Math.max(20, Math.min(40, Math.floor(img.width / 10)));
-  const targetHeight = Math.max(20, Math.min(40, Math.floor(img.height / 10)));
-  
+  const targetWidth = Math.max(
+    20,
+    Math.min(40, Math.floor(img.width / 10)),
+  );
+  const targetHeight = Math.max(
+    20,
+    Math.min(40, Math.floor(img.height / 10)),
+  );
+
   // 存儲到 ref，供 useEffect 使用
-  pendingDimensionsRef.current = { width: targetWidth, height: targetHeight };
+  pendingDimensionsRef.current = {
+    width: targetWidth,
+    height: targetHeight,
+  };
 };
 
 // useEffect 生成馬賽克
 useEffect(() => {
   if (!image || isGenerating) return;
-  
+
   setIsGenerating(true);
-  
+
   setTimeout(() => {
     if (imageChanged) {
       // ✅ 新圖：使用 ref 中的目標尺寸
-      const { width, height } = pendingDimensionsRef.current || { width: 40, height: 40 };
-      
+      const { width, height } =
+        pendingDimensionsRef.current || {
+          width: 40,
+          height: 40,
+        };
+
       setMosaicWidth(width);
       setMosaicHeight(height);
-      
+
       // 生成馬賽克...
-      
-      setImageChanged(false);  // ✅ 重置標誌
+
+      setImageChanged(false); // ✅ 重置標誌
     } else {
       // ✅ 非新圖（改顏色數量）：使用當前尺寸
       // 生成馬賽克...
     }
-    
+
     setIsGenerating(false);
   }, 0);
-  
-}, [image, numColors, imageChanged]);  // ✅ 依賴 imageChanged 標誌
+}, [image, numColors, imageChanged]); // ✅ 依賴 imageChanged 標誌
 ```
 
 **Canvas 尺寸同步**:
@@ -664,29 +718,36 @@ useEffect(() => {
 useEffect(() => {
   const canvas = canvasRef.current;
   if (!canvas) return;
-  
+
   const width = mosaicWidth * (tileSize + tileSpacing);
   const height = mosaicHeight * (tileSize + tileSpacing);
-  
+
   canvas.width = width;
   canvas.height = height;
-  
+
   // 🔥 CRITICAL: Force redraw immediately after canvas size changes
   // This fixes the bug where new images show old dimensions (e.g., 14x7 instead of 40x40)
-  drawMosaic();  // ✅ 強制重繪
-  
-}, [mosaicWidth, mosaicHeight, tileSize, tileSpacing, borderEnabled, borderWidth, drawMosaic]);
+  drawMosaic(); // ✅ 強制重繪
+}, [
+  mosaicWidth,
+  mosaicHeight,
+  tileSize,
+  tileSpacing,
+  borderEnabled,
+  borderWidth,
+  drawMosaic,
+]);
 ```
 
 ### 📊 驗證結果
 
 **測試場景**:
 
-| 操作 | 修復前 | 修復後 |
-|-----|--------|--------|
-| 上傳圖 A (40x40) → 改為 14x7 → 上傳圖 B | 14x7 ❌ | 40x40 ✅ |
-| 上傳圖 A → 改為 60x60 → 上傳圖 B | 60x60 ❌ | 40x40 ✅ |
-| 只改變顏色數量 | 尺寸重置 ❌ | 尺寸保持 ✅ |
+| 操作                                    | 修復前      | 修復後      |
+| --------------------------------------- | ----------- | ----------- |
+| 上傳圖 A (40x40) → 改為 14x7 → 上傳圖 B | 14x7 ❌     | 40x40 ✅    |
+| 上傳圖 A → 改為 60x60 → 上傳圖 B        | 60x60 ❌    | 40x40 ✅    |
+| 只改變顏色數量                          | 尺寸重置 ❌ | 尺寸保持 ✅ |
 
 ### 🎓 經驗教訓
 
@@ -704,6 +765,7 @@ useEffect(() => {
 **時間**: 2026-01-11
 
 **問題場景**:
+
 ```
 1. 用戶上傳圖片 → 自動分割為 4 色
 2. 用戶手動調整：將「天空」區域從藍色改為粉色
@@ -712,7 +774,8 @@ useEffect(() => {
 5. 🔥 問題：「天空」區域變回藍色（用戶修改丟失）
 ```
 
-**核心挑戰**: 
+**核心挑戰**:
+
 > 如何在「重新分割圖片」後，記住用戶對「特定空間區域」的顏色修改？
 
 ### 🔍 錯誤嘗試記錄
@@ -722,18 +785,20 @@ useEffect(() => {
 ```typescript
 // 想法：記錄「原色 → 新色」的映射
 interface ColorMapping {
-  originalColor: string;  // "#0000FF" (藍色)
-  newColor: string;       // "#FF69B4" (粉色)
+  originalColor: string; // "#0000FF" (藍色)
+  newColor: string; // "#FF69B4" (粉色)
 }
 
 const colorMappings: ColorMapping[] = [
-  { originalColor: "#0000FF", newColor: "#FF69B4" }
+  { originalColor: "#0000FF", newColor: "#FF69B4" },
 ];
 
 // 重新分割後應用映射
 const applyColorMappings = (newPalette: string[]) => {
-  return newPalette.map(color => {
-    const mapping = colorMappings.find(m => m.originalColor === color);
+  return newPalette.map((color) => {
+    const mapping = colorMappings.find(
+      (m) => m.originalColor === color,
+    );
     return mapping ? mapping.newColor : color;
   });
 };
@@ -750,12 +815,12 @@ const applyColorMappings = (newPalette: string[]) => {
 ```typescript
 // 想法：記錄「調色盤索引 → 顏色」的映射
 interface IndexMapping {
-  paletteIndex: number;   // 2 (第2號顏色)
-  newColor: string;       // "#FF69B4" (粉色)
+  paletteIndex: number; // 2 (第2號顏色)
+  newColor: string; // "#FF69B4" (粉色)
 }
 
 const indexMappings: IndexMapping[] = [
-  { paletteIndex: 2, newColor: "#FF69B4" }
+  { paletteIndex: 2, newColor: "#FF69B4" },
 ];
 
 // ❌ 失敗原因：
@@ -789,6 +854,7 @@ const pixelMods: PixelModification[] = [
 ### ✅ 最終解決方案：SegmentMemory（空間記憶系統）
 
 **核心洞察**:
+
 > 記錄的不是「顏色」或「索引」，而是「空間區域」的形狀和位置
 
 #### 設計原理
@@ -798,7 +864,7 @@ const pixelMods: PixelModification[] = [
 
 export interface SegmentMask {
   // 二進制遮罩 - 記錄區域的「形狀」
-  mask: boolean[][];  // mask[y][x] = true 表示該像素屬於此區域
+  mask: boolean[][]; // mask[y][x] = true 表示該像素屬於此區域
   width: number;
   height: number;
 }
@@ -806,13 +872,13 @@ export interface SegmentMask {
 export interface SegmentModification {
   // 原始區域的空間遮罩（形狀 + 位置）
   segmentMask: SegmentMask;
-  
+
   // 原始顏色（用於驗證）
   originalColor: string;
-  
+
   // 用戶修改後的顏色
   modifiedColor: string;
-  
+
   // 時間戳
   timestamp: number;
 }
@@ -824,38 +890,41 @@ export interface SegmentModification {
 /**
  * 計算兩個區域的空間相似度
  * IoU = (交集面積) / (聯集面積)
- * 
+ *
  * 例如：
  *   區域 A: ███░░    區域 B: ░███░
  *           ███░░            ░███░
- *   
+ *
  *   交集:   ░█░░░    聯集:   ████░
  *           ░█░░░            ████░
- *   
+ *
  *   IoU = 2 / 8 = 0.25
  */
-function calculateSegmentIoU(mask1: SegmentMask, mask2: SegmentMask): number {
+function calculateSegmentIoU(
+  mask1: SegmentMask,
+  mask2: SegmentMask,
+): number {
   // 1. 將兩個遮罩放大到相同尺寸（保持比例）
   const targetWidth = Math.max(mask1.width, mask2.width);
   const targetHeight = Math.max(mask1.height, mask2.height);
-  
+
   const resized1 = resizeMask(mask1, targetWidth, targetHeight);
   const resized2 = resizeMask(mask2, targetWidth, targetHeight);
-  
+
   // 2. 計算交集和聯集
   let intersection = 0;
   let union = 0;
-  
+
   for (let y = 0; y < targetHeight; y++) {
     for (let x = 0; x < targetWidth; x++) {
       const a = resized1[y][x];
       const b = resized2[y][x];
-      
-      if (a && b) intersection++;  // 都是 true → 交集
-      if (a || b) union++;          // 至少一個 true → 聯集
+
+      if (a && b) intersection++; // 都是 true → 交集
+      if (a || b) union++; // 至少一個 true → 聯集
     }
   }
-  
+
   return union === 0 ? 0 : intersection / union;
 }
 ```
@@ -865,7 +934,7 @@ function calculateSegmentIoU(mask1: SegmentMask, mask2: SegmentMask): number {
 ```typescript
 export class SegmentMemory {
   private modifications: SegmentModification[] = [];
-  
+
   /**
    * 步驟 1: 記錄用戶的顏色修改
    */
@@ -873,17 +942,25 @@ export class SegmentMemory {
     colorMap: number[][],
     segmentIndex: number,
     originalColor: string,
-    newColor: string
+    newColor: string,
   ): void {
     // 創建當前區域的空間遮罩
-    const segmentMask = createSegmentMask(colorMap, segmentIndex);
-    
+    const segmentMask = createSegmentMask(
+      colorMap,
+      segmentIndex,
+    );
+
     // 檢查是否已經有相同區域的修改（IoU > 0.9）
-    const existingIndex = this.modifications.findIndex(mod => {
-      const iou = calculateSegmentIoU(mod.segmentMask, segmentMask);
-      return iou > 0.9;  // 90% 相似 → 認為是同一區域
-    });
-    
+    const existingIndex = this.modifications.findIndex(
+      (mod) => {
+        const iou = calculateSegmentIoU(
+          mod.segmentMask,
+          segmentMask,
+        );
+        return iou > 0.9; // 90% 相似 → 認為是同一區域
+      },
+    );
+
     if (existingIndex !== -1) {
       // 更新現有修改
       this.modifications[existingIndex] = {
@@ -902,43 +979,53 @@ export class SegmentMemory {
       });
     }
   }
-  
+
   /**
    * 步驟 2: 重新分割後，找到匹配的區域並應用修改
    */
   applyModificationsToPalette(
     newColorMap: number[][],
-    newPalette: string[]
+    newPalette: string[],
   ): string[] {
     if (this.modifications.length === 0) {
-      return newPalette;  // 沒有修改，直接返回
+      return newPalette; // 沒有修改，直接返回
     }
-    
+
     const modifiedPalette = [...newPalette];
-    
+
     // 對於新調色盤中的每個區域
-    for (let segmentIndex = 0; segmentIndex < newPalette.length; segmentIndex++) {
+    for (
+      let segmentIndex = 0;
+      segmentIndex < newPalette.length;
+      segmentIndex++
+    ) {
       // 創建新區域的遮罩
-      const newSegmentMask = createSegmentMask(newColorMap, segmentIndex);
-      
+      const newSegmentMask = createSegmentMask(
+        newColorMap,
+        segmentIndex,
+      );
+
       // 在所有記錄的修改中找最匹配的
       let bestMatch: SegmentModification | null = null;
       let bestIoU = 0;
-      
+
       for (const mod of this.modifications) {
-        const iou = calculateSegmentIoU(mod.segmentMask, newSegmentMask);
+        const iou = calculateSegmentIoU(
+          mod.segmentMask,
+          newSegmentMask,
+        );
         if (iou > bestIoU) {
           bestIoU = iou;
           bestMatch = mod;
         }
       }
-      
+
       // 如果 IoU > 0.3（至少 30% 重疊），應用修改
       if (bestIoU > 0.3 && bestMatch) {
         modifiedPalette[segmentIndex] = bestMatch.modifiedColor;
       }
     }
-    
+
     return modifiedPalette;
   }
 }
@@ -983,12 +1070,12 @@ SegmentMemory 記錄：
 
 **測試場景**:
 
-| 場景 | 顏色映射方案 | SegmentMemory |
-|-----|------------|--------------|
-| 改色後增加顏色數 | ❌ 修改丟失 | ✅ 保持 |
-| 改色後改畫布尺寸 | ❌ 位置錯位 | ✅ 自動縮放 |
-| 合併顏色後改尺寸 | ❌ 分離 | ✅ 保持合併 |
-| 多次修改同一區域 | ❌ 記錄膨脹 | ✅ 自動更新 |
+| 場景             | 顏色映射方案 | SegmentMemory |
+| ---------------- | ------------ | ------------- |
+| 改色後增加顏色數 | ❌ 修改丟失  | ✅ 保持       |
+| 改色後改畫布尺寸 | ❌ 位置錯位  | ✅ 自動縮放   |
+| 合併顏色後改尺寸 | ❌ 分離      | ✅ 保持合併   |
+| 多次修改同一區域 | ❌ 記錄膨脹  | ✅ 自動更新   |
 
 ### 🎓 經驗教訓
 
@@ -1006,6 +1093,7 @@ SegmentMemory 記錄：
 **時間**: 2026-01-11
 
 **現象**:
+
 ```
 1. 4 色調色盤，selectedColorGroup = 3
 2. 用戶合併兩個顏色 → palette.length = 3
@@ -1013,6 +1101,7 @@ SegmentMemory 記錄：
 ```
 
 **錯誤堆棧**:
+
 ```
 TypeError: Cannot read property 'color' of undefined
   at ColorPalette.render
@@ -1026,12 +1115,12 @@ TypeError: Cannot read property 'color' of undefined
 
 const applyStateFromHistory = (state: any) => {
   // ... 其他狀態更新 ...
-  
+
   // CRITICAL: Reset selectedColorGroup if it's out of bounds
   // This can happen when undoing a color merge operation
-  setSelectedColorGroup(prev => {
+  setSelectedColorGroup((prev) => {
     if (prev !== null && prev >= state.palette.length) {
-      return null;  // ✅ 越界則清空選擇
+      return null; // ✅ 越界則清空選擇
     }
     return prev;
   });
@@ -1040,11 +1129,11 @@ const applyStateFromHistory = (state: any) => {
 // 同樣在合併顏色時
 const handleMergeColors = () => {
   // ... 合併邏輯 ...
-  
+
   setNumColors(newPalette.length);
-  
+
   // ✅ 如果當前選擇的顏色被合併了，清空選擇
-  setSelectedColorGroup(prev => {
+  setSelectedColorGroup((prev) => {
     if (prev !== null && prev >= newPalette.length) {
       return null;
     }
@@ -1068,14 +1157,18 @@ const handleMergeColors = () => {
 **時間**: 2026-01-11
 
 **現象**:
+
 ```typescript
 // ❌ 錯誤的依賴設置
 useEffect(() => {
   // 生成馬賽克...
-  const newColorMap = generateMosaic(image, mosaicWidth, mosaicHeight);
-  setTileColorMap(newColorMap);  // 🔥 更新狀態
-  
-}, [image, numColors, mosaicWidth, mosaicHeight, tileColorMap]);  // ❌ 依賴 tileColorMap
+  const newColorMap = generateMosaic(
+    image,
+    mosaicWidth,
+    mosaicHeight,
+  );
+  setTileColorMap(newColorMap); // 🔥 更新狀態
+}, [image, numColors, mosaicWidth, mosaicHeight, tileColorMap]); // ❌ 依賴 tileColorMap
 
 // 循環：
 // tileColorMap 改變 → 觸發 useEffect → setTileColorMap → tileColorMap 改變 → ...
@@ -1088,15 +1181,14 @@ useEffect(() => {
 
 useEffect(() => {
   if (!image || isGenerating) return;
-  
+
   setIsGenerating(true);
-  
+
   setTimeout(() => {
     // 生成馬賽克...
     setIsGenerating(false);
   }, 0);
-  
-}, [image, numColors, imageChanged]);  
+}, [image, numColors, imageChanged]);
 // ✅ 移除 mosaicWidth 和 mosaicHeight
 // 尺寸改變通過 onSizeChange 回調處理，不觸發此 useEffect
 ```
@@ -1116,6 +1208,7 @@ useEffect(() => {
 **時間**: 2026-01-11
 
 **現象**:
+
 ```
 1. 6 色調色盤
 2. 用戶精心調整第 5 號顏色為特殊的粉色
@@ -1130,38 +1223,46 @@ useEffect(() => {
 ```typescript
 // src/app/components/MosaicGeneratorV2.tsx - Line 253
 
-const reducePaletteByUsage = useCallback((
-  currentPalette: string[],
-  currentColorMap: number[][],
-  targetCount: number,
-  userModifiedIndices: Set<number>  // ✅ 傳入用戶修改的索引
-) => {
-  // 計算每個顏色的使用次數
-  const colorUsage = currentPalette.map((color, index) => ({
-    index,
-    color,
-    count: 0,
-    isModified: userModifiedIndices.has(index),  // ✅ 標記用戶修改
-  }));
-  
-  // 統計使用次數...
-  
-  // ✅ 分開處理：用戶修改的 vs 自動生成的
-  const modifiedColors = colorUsage.filter(c => c.isModified);
-  const autoColors = colorUsage.filter(c => !c.isModified);
-  
-  // 按使用次數排序（只排序自動生成的）
-  autoColors.sort((a, b) => b.count - a.count);
-  
-  // 取前 N 個自動顏色 + 所有用戶修改的顏色
-  const numAutoColors = Math.max(0, targetCount - modifiedColors.length);
-  const keepColors = [
-    ...modifiedColors,              // ✅ 保留所有用戶修改
-    ...autoColors.slice(0, numAutoColors)  // 取使用最多的自動顏色
-  ];
-  
-  // ...
-}, []);
+const reducePaletteByUsage = useCallback(
+  (
+    currentPalette: string[],
+    currentColorMap: number[][],
+    targetCount: number,
+    userModifiedIndices: Set<number>, // ✅ 傳入用戶修改的索引
+  ) => {
+    // 計算每個顏色的使用次數
+    const colorUsage = currentPalette.map((color, index) => ({
+      index,
+      color,
+      count: 0,
+      isModified: userModifiedIndices.has(index), // ✅ 標記用戶修改
+    }));
+
+    // 統計使用次數...
+
+    // ✅ 分開處理：用戶修改的 vs 自動生成的
+    const modifiedColors = colorUsage.filter(
+      (c) => c.isModified,
+    );
+    const autoColors = colorUsage.filter((c) => !c.isModified);
+
+    // 按使用次數排序（只排序自動生成的）
+    autoColors.sort((a, b) => b.count - a.count);
+
+    // 取前 N 個自動顏色 + 所有用戶修改的顏色
+    const numAutoColors = Math.max(
+      0,
+      targetCount - modifiedColors.length,
+    );
+    const keepColors = [
+      ...modifiedColors, // ✅ 保留所有用戶修改
+      ...autoColors.slice(0, numAutoColors), // 取使用最多的自動顏色
+    ];
+
+    // ...
+  },
+  [],
+);
 ```
 
 ### 🎓 經驗教訓
@@ -1179,6 +1280,7 @@ const reducePaletteByUsage = useCallback((
 **時間**: 2026-01-11
 
 **現象**:
+
 ```
 1. 圖片 A：用戶修改「天空」為粉色
 2. SegmentMemory 記錄：天空區域 → 粉色
@@ -1194,21 +1296,21 @@ const reducePaletteByUsage = useCallback((
 
 const handleImageUpload = async (file: File) => {
   // ... 加載圖片 ...
-  
+
   // CRITICAL: Clear ALL state when uploading new image
   // This prevents memory leaks and ensures clean slate for new image
   setTileColorMap([]);
-  
+
   // Clear segment memory - each image should have its own memory
   // Don't carry over modifications from previous images!
-  segmentMemoryRef.current.clear();  // ✅ 清空 SegmentMemory
-  
+  segmentMemoryRef.current.clear(); // ✅ 清空 SegmentMemory
+
   // Clear modified color indices
-  setModifiedColorIndices(new Set());  // ✅ 清空用戶修改記錄
-  
+  setModifiedColorIndices(new Set()); // ✅ 清空用戶修改記錄
+
   // Reset history
-  resetHistory();  // ✅ 清空 Undo/Redo 歷史
-  
+  resetHistory(); // ✅ 清空 Undo/Redo 歷史
+
   setImage(newImage);
   setImageChanged(true);
 };
@@ -1229,6 +1331,7 @@ const handleImageUpload = async (file: File) => {
 **時間**: 2026-01-11
 
 **現象**:
+
 ```
 1. 40x40 → 改為 60x60
 2. 用戶調整顏色
@@ -1242,16 +1345,16 @@ const handleImageUpload = async (file: File) => {
 
 const applyStateFromHistory = (state: any) => {
   // ... 應用狀態 ...
-  
+
   setMosaicWidth(state.mosaicWidth);
   setMosaicHeight(state.mosaicHeight);
-  
+
   // CRITICAL: Update prevMosaicDimensionsRef to prevent useEffect from thinking dimensions changed
-  prevMosaicDimensionsRef.current = { 
-    width: state.mosaicWidth, 
-    height: state.mosaicHeight 
-  };  // ✅ 同步 ref
-  
+  prevMosaicDimensionsRef.current = {
+    width: state.mosaicWidth,
+    height: state.mosaicHeight,
+  }; // ✅ 同步 ref
+
   // 這樣 useEffect 不會誤以為尺寸改變，避免重新生成馬賽克
 };
 ```
@@ -1271,6 +1374,7 @@ const applyStateFromHistory = (state: any) => {
 **時間**: 2026-01-11
 
 **現象**:
+
 ```
 1. 用戶合併顏色 2 和 3
 2. palette.length: 4 → 3
@@ -1284,8 +1388,8 @@ const applyStateFromHistory = (state: any) => {
 // ❌ 錯誤代碼 (已修復)
 const handleSizeChange = () => {
   // 使用「原始調色盤快照」重新取樣
-  const resamplePalette = originalPaletteSnapshot;  // ❌ 這是合併前的 4 色
-  
+  const resamplePalette = originalPaletteSnapshot; // ❌ 這是合併前的 4 色
+
   // 重新匹配最接近的顏色 → 分離成原來的 2 個顏色
 };
 ```
@@ -1297,8 +1401,8 @@ const handleSizeChange = () => {
 
 const handleSizeChange = () => {
   // 🔥 FIX: Use current palette (reflects merged colors) instead of originalPaletteSnapshot
-  const resamplePalette = palette;  // ✅ 使用當前調色盤（包含合併）
-  
+  const resamplePalette = palette; // ✅ 使用當前調色盤（包含合併）
+
   // 重新取樣時使用合併後的調色盤 → 顏色保持合併狀態
 };
 ```
@@ -1324,7 +1428,7 @@ const handleSizeChange = () => {
 addToHistory({
   colorMap: newColorMap,
   palette: newPalette,
-  numColors: newPalette.length,  // ✅ 使用實際長度
+  numColors: newPalette.length, // ✅ 使用實際長度
   // ...
 });
 ```
@@ -1351,6 +1455,7 @@ addToHistory({
 **時間**: 2026-01-15
 
 **功能需求**:
+
 ```
 1. 用戶上傳帶透明度的 PNG 圖片
 2. 系統需要正確處理透明像素（alpha = 0）
@@ -1362,6 +1467,7 @@ addToHistory({
 ### 🐛 Bug #1: 調整畫布大小時透明格變黑格
 
 **問題描述**:
+
 ```
 1. 上傳帶透明區域的 PNG 圖片 → 透明格子正確顯示
 2. 調整畫布寬度或高度
@@ -1370,10 +1476,11 @@ addToHistory({
 ```
 
 **根本原因**:
+
 ```typescript
 // ❌ handleCanvasSizeChange 重映射邏輯錯誤
-const remappedColorMap = newColorMap.map(row =>
-  row.map(oldIndex => oldToNewIndex.get(oldIndex) ?? 0)
+const remappedColorMap = newColorMap.map((row) =>
+  row.map((oldIndex) => oldToNewIndex.get(oldIndex) ?? 0),
 );
 
 // 問題：
@@ -1383,13 +1490,14 @@ const remappedColorMap = newColorMap.map(row =>
 ```
 
 **解決方案**:
+
 ```typescript
 // ✅ MosaicGeneratorV2.tsx:1195-1200
-const remappedColorMap = newColorMap.map(row =>
-  row.map(oldIndex => {
-    if (oldIndex === -1) return -1;  // ✅ 保留透明索引
+const remappedColorMap = newColorMap.map((row) =>
+  row.map((oldIndex) => {
+    if (oldIndex === -1) return -1; // ✅ 保留透明索引
     return oldToNewIndex.get(oldIndex) ?? 0;
-  })
+  }),
 );
 ```
 
@@ -1398,6 +1506,7 @@ const remappedColorMap = newColorMap.map(row =>
 ### 🐛 Bug #2: 點擊透明色票無法選中並繪製透明
 
 **問題描述**:
+
 ```
 1. 上傳帶透明區域的 PNG → 色票面板顯示透明色票
 2. 點擊透明色票
@@ -1407,6 +1516,7 @@ const remappedColorMap = newColorMap.map(row =>
 ```
 
 **根本原因 1 - 選擇邏輯**:
+
 ```typescript
 // ❌ 錯誤邏輯
 onColorSelect={(index) => {
@@ -1421,13 +1531,14 @@ onColorSelect={(index) => {
 ```
 
 **解決方案 1**:
+
 ```typescript
 // ✅ MosaicGeneratorV2.tsx:1472-1485
 onColorSelect={(index) => {
   // Allow selecting transparent swatch (-1) to paint transparency
   const newIndex = selectedColorGroup === index ? null : index;
   setSelectedColorGroup(newIndex);  // ✅ 允許選中 -1
-  
+
   // Don't show color picker for transparent swatch
   if (index === -1) {
     setShowColorPicker(null);
@@ -1438,30 +1549,32 @@ onColorSelect={(index) => {
 ```
 
 **根本原因 2 - 透明格子高光**:
+
 ```typescript
 // ❌ MosaicCanvas.tsx 錯誤邏輯
 if (colorIndex === -1) {
-  ctx.fillStyle = 'rgba(0,0,0,0)';
+  ctx.fillStyle = "rgba(0,0,0,0)";
   ctx.fillRect(px, py, tileSize, tileSize);
-  continue;  // ❌ 直接跳過，沒有檢查是否需要高光
+  continue; // ❌ 直接跳過，沒有檢查是否需要高光
 }
 ```
 
 **解決方案 2**:
+
 ```typescript
 // ✅ MosaicCanvas.tsx:117-129
 if (colorIndex === -1) {
   // Draw transparent tile
-  ctx.fillStyle = 'rgba(0,0,0,0)';
+  ctx.fillStyle = "rgba(0,0,0,0)";
   ctx.fillRect(px, py, tileSize, tileSize);
-  
+
   // If transparent color group is active, draw highlight border
   if (activeColorGroup === -1) {
-    ctx.strokeStyle = 'rgba(255, 200, 0, 0.8)';  // ✅ 金黃色高光
+    ctx.strokeStyle = "rgba(255, 200, 0, 0.8)"; // ✅ 金黃色高光
     ctx.lineWidth = 2;
     ctx.strokeRect(px + 1, py + 1, tileSize - 2, tileSize - 2);
   }
-  
+
   continue;
 }
 ```
@@ -1470,12 +1583,12 @@ if (colorIndex === -1) {
 
 **測試場景**:
 
-| 操作 | 修復前 | 修復後 |
-|-----|--------|--------|
-| 調整畫布大小 | 透明→黑色 ❌ | 保持透明 ✅ |
-| 點擊透明色票 | 無法選中 ❌ | 正確選中 ✅ |
-| 透明格子高光 | 無高光 ❌ | 金黃色高光 ✅ |
-| 繪製透明格子 | 無法繪製 ❌ | 正常繪製 ✅ |
+| 操作         | 修復前       | 修復後        |
+| ------------ | ------------ | ------------- |
+| 調整畫布大小 | 透明→黑色 ❌ | 保持透明 ✅   |
+| 點擊透明色票 | 無法選中 ❌  | 正確選中 ✅   |
+| 透明格子高光 | 無高光 ❌    | 金黃色高光 ✅ |
+| 繪製透明格子 | 無法繪製 ❌  | 正常繪製 ✅   |
 
 ### 🎓 經驗教訓
 
@@ -1493,6 +1606,7 @@ if (colorIndex === -1) {
 **時間**: 2026-01-16
 
 **現象**:
+
 ```
 1. 上傳圖片 → 自動生成 7 色調色盤
 2. 用戶將索引 4 和 5 兩個淺色改為白色（觸發自動合併）
@@ -1507,39 +1621,46 @@ if (colorIndex === -1) {
 這個 bug 有四個相互關聯的根本原因：
 
 #### 原因 1: Color Picker 雙重觸發
+
 瀏覽器 Color Picker 點擊確認會觸發兩次 onChange 事件
 
 #### 原因 2: 防抖機制失效
+
 時間戳防抖無法防止第二次呼叫（間隔可能 > 50ms）
 
 #### 原因 3: SegmentMemory 被刪除
+
 合併顏色時錯誤地調用 removeModificationsForColor()，導致空間記憶丟失
 
 #### 原因 4: originalPaletteSnapshot 被更新
+
 合併時錯誤更新了原始基準，導致畫布調整時使用錯誤的基準
 
 ### ✅ 最終解決方案
 
 #### 解決方案 1: 使用狀態比較代替時間戳防抖
+
 ```typescript
 if (palette[colorIndex] === newColorRgb) {
-  return;  // ✅ 顏色已匹配，直接返回
+  return; // ✅ 顏色已匹配，直接返回
 }
 ```
 
 #### 解決方案 2: 永不刪除 SegmentMemory
+
 移除所有 removeModificationsForColor() 調用，保留所有空間修改記錄
 
 #### 解決方案 3: 永不更新 originalPaletteSnapshot
+
 確保原始快照永遠是初始生成的調色盤，合併操作不影響基準
 
 ### 📊 驗證結果
 
-| 操作 | 修復前 | 修復後 |
-|-----|--------|--------|
-| 改色 index=4,5→白(合併) → 調整畫布 | 只有4白，5跑色 ❌ | 都是白色 ✅ |
-| 快速點擊顏色選擇器 | 觸發多次合併 ❌ | 只執行一次 ✅ |
-| 改3個顏色為白 → 調整畫布 | 部分跑色 ❌ | 全部保留 ✅ |
+| 操作                               | 修復前            | 修復後        |
+| ---------------------------------- | ----------------- | ------------- |
+| 改色 index=4,5→白(合併) → 調整畫布 | 只有4白，5跑色 ❌ | 都是白色 ✅   |
+| 快速點擊顏色選擇器                 | 觸發多次合併 ❌   | 只執行一次 ✅ |
+| 改3個顏色為白 → 調整畫布           | 部分跑色 ❌       | 全部保留 ✅   |
 
 ### 🎓 經驗教訓
 
@@ -1557,6 +1678,7 @@ if (palette[colorIndex] === newColorRgb) {
 **時間**: 2026-01-16
 
 **現象**:
+
 ```
 1. 上傳圖片 → 自動生成調色盤（例如 7 色）
 2. 用戶合併兩個白色 → 調色盤減少為 6 色
@@ -1570,6 +1692,7 @@ if (palette[colorIndex] === newColorRgb) {
 ### 🔍 根本原因
 
 **SegmentMemory 記錄了兩條白色修改**：
+
 ```typescript
 // 用戶操作
 1. 將 segment 4 改為白色 → SegmentMemory: [(4, 原色A→white)]
@@ -1580,11 +1703,12 @@ if (palette[colorIndex] === newColorRgb) {
 4. applyModificationsToPalette() 遍歷所有修改記錄：
    - 第一條：找到最佳匹配 segment=2 → 改為 white
    - 第二條：找到另一個最佳匹配 segment=5 → 也改為 white
-   
+
 結果：調色盤中出現兩個 rgb(255, 255, 255) ❌
 ```
 
 **核心問題**：
+
 - SegmentMemory 記錄的是「空間區域的顏色修改」
 - 兩個不同的空間區域可以改成同一個顏色
 - 但調色盤中不應該有重複的顏色項目
@@ -1603,38 +1727,38 @@ applyModificationsToPalette(
   if (this.modifications.length === 0) {
     return newPalette;
   }
-  
+
   const modifiedPalette = [...newPalette];
   const usedSegments = new Set<number>();
   const appliedColors = new Map<string, number>(); // 🔥 NEW: 追蹤已應用的顏色
-  
+
   for (let i = 0; i < this.modifications.length; i++) {
     const mod = this.modifications[i];
-    
+
     // 🔥 FIX: 檢查這個顏色是否已經應用過
     const [r, g, b] = mod.modifiedColor.split(',').map(Number);
     const colorKey = `rgb(${r}, ${g}, ${b})`;
-    
+
     if (appliedColors.has(colorKey)) {
       continue;  // ✅ 跳過重複顏色，避免創建副本
     }
-    
+
     // 找到最佳匹配的 segment
     let bestSegmentIndex = -1;
     let bestIoU = 0;
-    
+
     for (let segmentIndex = 0; segmentIndex < newPalette.length; segmentIndex++) {
       if (usedSegments.has(segmentIndex)) continue;
-      
+
       const newSegmentMask = createSegmentMask(newColorMap, segmentIndex);
       const iou = calculateSegmentIoU(mod.segmentMask, newSegmentMask);
-      
+
       if (iou > bestIoU) {
         bestIoU = iou;
         bestSegmentIndex = segmentIndex;
       }
     }
-    
+
     // 應用修改
     if (bestIoU > 0.3 && bestSegmentIndex !== -1) {
       modifiedPalette[bestSegmentIndex] = colorKey;
@@ -1642,7 +1766,7 @@ applyModificationsToPalette(
       appliedColors.set(colorKey, bestSegmentIndex); // 🔥 NEW: 記錄已應用
     }
   }
-  
+
   return modifiedPalette;
 }
 ```
@@ -1650,6 +1774,7 @@ applyModificationsToPalette(
 ### 🔧 修改邏輯
 
 **Before**:
+
 ```typescript
 // ❌ 舊邏輯：無檢查，直接應用所有修改
 for (modification in modifications) {
@@ -1658,6 +1783,7 @@ for (modification in modifications) {
 ```
 
 **After**:
+
 ```typescript
 // ✅ 新邏輯：檢查重複，跳過已應用的顏色
 appliedColors = Map<colorKey, segmentIndex>
@@ -1673,16 +1799,16 @@ for (modification in modifications) {
 
 ### 📊 驗證結果
 
-| 操作流程 | 修復前 | 修復後 |
-|---------|--------|--------|
-| 合併兩個白色 → 調整顏色數量 | 出現兩個 #ffffff ❌ | 只有一個白色 ✅ |
-| 合併兩個膚色 + 兩個白色 → 調整顏色數量 | 重複顏色 ❌ | 無重複 ✅ |
-| 合併後調整顏色數量多次 | 重複累積 ❌ | 始終無重複 ✅ |
+| 操作流程                               | 修復前              | 修復後          |
+| -------------------------------------- | ------------------- | --------------- |
+| 合併兩個白色 → 調整顏色數量            | 出現兩個 #ffffff ❌ | 只有一個白色 ✅ |
+| 合併兩個膚色 + 兩個白色 → 調整顏色數量 | 重複顏色 ❌         | 無重複 ✅       |
+| 合併後調整顏色數量多次                 | 重複累積 ❌         | 始終無重複 ✅   |
 
 ### 🎓 經驗教訓
 
 1. **修改記錄 ≠ 最終狀態**: SegmentMemory 記錄修改歷史，但最終調色盤應該是去重的
-2. **空間映射 vs 顏色唯一性**: 
+2. **空間映射 vs 顏色唯一性**:
    - 空間記憶系統追蹤「哪些區域改了什麼顏色」（可能有重複）
    - 調色盤要求「每個顏色只出現一次」（必須去重）
 3. **先到先得策略**: 第一個匹配到的修改佔用顏色位，後續相同顏色的修改跳過
@@ -1697,12 +1823,14 @@ for (modification in modifications) {
 **時間**: 2026-01-10
 
 **V1 的問題**:
+
 - 單一文件超過 1500 行
 - Magic numbers 散落各處
 - 沒有類型定義
 - 重複邏輯多
 
 **V2 改革**:
+
 - 拆分為 10+ 模塊化文件
 - 創建 `types.ts`, `constants.ts`, `helpers.ts`
 - 完整類型系統
@@ -1717,20 +1845,24 @@ for (modification in modifications) {
 ### 15 個重大問題分類
 
 #### 核心設計問題
+
 1. ✅ 問題 #1: ColorMap Index Mapping - 調色後改尺寸不跑色
 2. ✅ 問題 #5: SegmentMemory - 空間記憶系統設計
 
 #### 狀態同步問題
+
 3. ✅ 問題 #2, #12: numColors 與 palette.length 不同步
 4. ✅ 問題 #6: selectedColorGroup 越界
 5. ✅ 問題 #10: Undo 後尺寸錯亂
 
 #### 閉包和時序問題
+
 6. ✅ 問題 #3: History 閉包陷阱
 7. ✅ 問題 #4: 新圖使用舊尺寸
 8. ✅ 問題 #7: useEffect 依賴循環
 
 #### 用戶體驗問題
+
 9. ✅ 問題 #8: 用戶修改的顏色被移除
 10. ✅ 問題 #9: 舊圖 SegmentMemory 污染新圖
 11. ✅ 問題 #11: 合併顏色後改尺寸重新分離

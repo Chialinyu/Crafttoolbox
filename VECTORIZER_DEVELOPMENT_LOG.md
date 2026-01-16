@@ -26,7 +26,8 @@
 
 **時間**: 2026-01-13
 
-**現象**: 
+**現象**:
+
 - PNG 圖片上傳後,在第二步(模式選擇)無法進入第三步
 - JPG 圖片正常工作
 - 預覽畫面無法更新
@@ -37,16 +38,19 @@
 **位置**: `VectorizerTool.tsx` - Line ~460
 
 **原始代碼**:
+
 ```typescript
 const handleConfirmParams = useCallback(async () => {
   // ...省略前面的邏輯...
-  
+
   // ❌ 問題在這裡：autoThresholdValue 判斷邏輯錯誤
   if (tempUseAutoThreshold && !autoThresholdValue) {
-    console.warn('Auto threshold enabled but no threshold calculated yet');
+    console.warn(
+      "Auto threshold enabled but no threshold calculated yet",
+    );
     return; // 🔥 這裡導致 PNG 卡住！
   }
-  
+
   // ...後續邏輯...
 }, [dependencies]);
 ```
@@ -73,7 +77,8 @@ const handleConfirmParams = useCallback(async () => {
 9. 無法進入第三步
 ```
 
-**核心問題**: 
+**核心問題**:
+
 - 檢查使用**當前狀態** (`tempUseAutoThreshold`)
 - 但 `autoThresholdValue` 是**舊狀態**(基於之前的參數計算)
 - 狀態不同步導致邏輯錯誤
@@ -83,17 +88,18 @@ const handleConfirmParams = useCallback(async () => {
 **修復**: 移除這個過早的判斷,讓 `preprocessImage()` 函數自行處理
 
 **修復後代碼**:
+
 ```typescript
 const handleConfirmParams = useCallback(async () => {
   // ...省略前面的邏輯...
-  
+
   // ✅ 移除過早的判斷
   // 讓 preprocessImage() 在需要時自動計算 autoThresholdValue
-  
+
   try {
     setIsGeneratingPreview(true);
     setEditingStep(null);
-    
+
     // 異步處理預覽生成
     setTimeout(() => {
       try {
@@ -101,21 +107,23 @@ const handleConfirmParams = useCallback(async () => {
           originalImageData,
           tempBlurRadius,
           tempThreshold,
-          mode === 'line' ? 1 : tempColorCount,
-          tempUseAutoThreshold
+          mode === "line" ? 1 : tempColorCount,
+          tempUseAutoThreshold,
         );
-        
+
         // ✅ preprocessImage 內部會處理 autoThresholdValue 的計算
-        setAutoThresholdValue(result.autoThresholdValue ?? null);
+        setAutoThresholdValue(
+          result.autoThresholdValue ?? null,
+        );
         // ...其他狀態更新...
       } catch (error) {
-        console.error('Preprocessing error:', error);
+        console.error("Preprocessing error:", error);
       } finally {
         setIsGeneratingPreview(false);
       }
     }, 0);
   } catch (error) {
-    console.error('Preprocessing error:', error);
+    console.error("Preprocessing error:", error);
     setEditingStep(null);
   }
 }, [dependencies]);
@@ -125,13 +133,13 @@ const handleConfirmParams = useCallback(async () => {
 
 **測試場景**:
 
-| 圖片類型 | 模式 | Auto Threshold | 結果 |
-|---------|------|----------------|------|
-| JPG | line | true | ✅ 正常 |
-| JPG | fill | false | ✅ 正常 |
-| PNG | line | true | ✅ 正常 |
-| PNG | fill | false | ✅ 正常 |
-| PNG | fill → line | false → true | ✅ **修復！** |
+| 圖片類型 | 模式        | Auto Threshold | 結果          |
+| -------- | ----------- | -------------- | ------------- |
+| JPG      | line        | true           | ✅ 正常       |
+| JPG      | fill        | false          | ✅ 正常       |
+| PNG      | line        | true           | ✅ 正常       |
+| PNG      | fill        | false          | ✅ 正常       |
+| PNG      | fill → line | false → true   | ✅ **修復！** |
 
 ### 🎓 經驗教訓
 
@@ -149,12 +157,14 @@ const handleConfirmParams = useCallback(async () => {
 **時間**: 2026-01-12
 
 **現象**:
+
 - Potrace 生成的 SVG 路徑將形狀"挖空"
 - 應該填充的區域變成透明
 - 應該透明的區域被填充
 - 視覺效果完全相反
 
 **示例**:
+
 ```
 預期: ⚫ (黑色圓形)
 實際: ⚪ (圓形孔洞,背景被填充)
@@ -165,29 +175,31 @@ const handleConfirmParams = useCallback(async () => {
 **位置**: `vectorization.ts` - `maskToImageData()` 函數
 
 **原始代碼**:
+
 ```typescript
 function maskToImageData(
   mask: Uint8Array,
   width: number,
-  height: number
+  height: number,
 ): ImageData {
   const imageData = new ImageData(width, height);
   const data = imageData.data;
-  
+
   for (let i = 0; i < mask.length; i++) {
     const value = mask[i];
     // ❌ 直接使用 mask 值,不反轉
-    data[i * 4] = value;     // R
+    data[i * 4] = value; // R
     data[i * 4 + 1] = value; // G
     data[i * 4 + 2] = value; // B
-    data[i * 4 + 3] = 255;   // A
+    data[i * 4 + 3] = 255; // A
   }
-  
+
   return imageData;
 }
 ```
 
 **Potrace 邏輯分析**:
+
 ```typescript
 // Potrace 的核心假設
 Potrace.trace() {
@@ -212,6 +224,7 @@ mask[i] = 0    // ⚫ 背景像素(黑色)
 **位置**: `vectorization.ts` - `maskToImageData()` 函數
 
 **修復代碼**:
+
 ```typescript
 /**
  * Convert Uint8Array mask to ImageData for Potrace
@@ -223,25 +236,26 @@ mask[i] = 0    // ⚫ 背景像素(黑色)
 function maskToImageData(
   mask: Uint8Array,
   width: number,
-  height: number
+  height: number,
 ): ImageData {
   const imageData = new ImageData(width, height);
   const data = imageData.data;
-  
+
   for (let i = 0; i < mask.length; i++) {
     const value = mask[i];
     const inverted = 255 - value; // ✅ 關鍵修復：顏色反轉
-    data[i * 4] = inverted;       // R
-    data[i * 4 + 1] = inverted;   // G
-    data[i * 4 + 2] = inverted;   // B
-    data[i * 4 + 3] = 255;        // A
+    data[i * 4] = inverted; // R
+    data[i * 4 + 1] = inverted; // G
+    data[i * 4 + 2] = inverted; // B
+    data[i * 4 + 3] = 255; // A
   }
-  
+
   return imageData;
 }
 ```
 
 **修復後流程**:
+
 ```typescript
 1. 形狀區域 → mask = 255 → inverted = 0 → ImageData = RGB(0,0,0) = 黑色
 2. Potrace 看到黑色 → 認為是形狀 → 追蹤並填充 ✅
@@ -255,13 +269,15 @@ function maskToImageData(
 **曾嘗試**: 反轉 SVG path 的繪製方向(winding order)
 
 **問題**:
+
 - 需要複雜的 SVG path 解析(M, L, C, A 等命令)
 - 需要反轉所有座標順序
 - 代碼量大(~170 行)
 - 對多路徑 SVG 處理複雜
 - fill-rule 需要特殊處理
 
-**為何廢棄**: 
+**為何廢棄**:
+
 - 方案 A(Mask 反轉)更簡單,只需 1 行代碼
 - 在數據源頭解決問題,避免後續處理
 - 代碼更易維護
@@ -272,12 +288,12 @@ function maskToImageData(
 
 **測試場景**:
 
-| 形狀類型 | 修復前 | 修復後 |
-|---------|--------|--------|
-| 圓形 | ⚪ 挖空 | ⚫ 填充 ✅ |
-| 矩形 | □ 挖空 | ■ 填充 ✅ |
-| 複雜形狀 | 反轉 | 正確 ✅ |
-| 多區域 | 混亂 | 正確 ✅ |
+| 形狀類型 | 修復前  | 修復後     |
+| -------- | ------- | ---------- |
+| 圓形     | ⚪ 挖空 | ⚫ 填充 ✅ |
+| 矩形     | □ 挖空  | ■ 填充 ✅  |
+| 複雜形狀 | 反轉    | 正確 ✅    |
+| 多區域   | 混亂    | 正確 ✅    |
 
 ### 🎓 經驗教訓
 
@@ -295,6 +311,7 @@ function maskToImageData(
 **時間**: 2026-01-13
 
 **現象**:
+
 - UI 有「Use Bezier Curves」開關
 - 開關狀態不影響向量化結果
 - 無論開關如何,都使用直線
@@ -305,13 +322,14 @@ function maskToImageData(
 **位置**: `vectorization.ts` - `vectorizeImage()` 函數 (Line 674)
 
 **原始代碼**:
+
 ```typescript
 // Level 2: Custom Bezier fallback
 const contours = findBoundaryContours(...);
 
 for (const contour of contours) {
   // ...計算 points, type, area...
-  
+
   // ❌ 問題：硬編碼檢查 config.useBezierCurves !== false
   let svgPath: string | undefined;
   if (config.useBezierCurves !== false) { // ⚠️ 永遠為 true！
@@ -321,16 +339,17 @@ for (const contour of contours) {
       svgPath = undefined;
     }
   }
-  
+
   paths.push({ points, svgPath, ... });
 }
 ```
 
 **問題邏輯分析**:
+
 ```typescript
 // VectorizerTool.tsx 傳遞的配置
 const config: VectorizationConfig = {
-  mode: 'fill',
+  mode: "fill",
   precision: 70,
   minArea: 20,
   simplify: true,
@@ -339,7 +358,7 @@ const config: VectorizationConfig = {
 
 // vectorization.ts 接收的配置
 interface VectorizationConfig {
-  mode: 'stroke' | 'fill' | 'mixed';
+  mode: "stroke" | "fill" | "mixed";
   precision: number;
   minArea: number;
   simplify: boolean;
@@ -358,6 +377,7 @@ if (config.useBezierCurves !== false) {
 ### 💡 三級 Fallback 策略設計
 
 **分析用戶測試結果**:
+
 ```
 用戶反饋：
 - 直線圖開啟「曲線」→ Potrace 效果更好
@@ -404,19 +424,19 @@ const [useBezierCurves, setUseBezierCurves] = useState(true);
 ```typescript
 // ❌ 移除前
 export interface VectorizationConfig {
-  mode: 'stroke' | 'fill' | 'mixed';
+  mode: "stroke" | "fill" | "mixed";
   precision: number;
   minArea: number;
   simplify: boolean;
   useBezierCurves?: boolean; // ❌ 刪除
-  bezierAlgorithm?: 'custom' | 'potrace'; // ❌ 刪除
+  bezierAlgorithm?: "custom" | "potrace"; // ❌ 刪除
   useImprovedTracing?: boolean;
   // ...
 }
 
 // ✅ 移除後
 export interface VectorizationConfig {
-  mode: 'stroke' | 'fill' | 'mixed';
+  mode: "stroke" | "fill" | "mixed";
   precision: number;
   minArea: number;
   simplify: boolean;
@@ -436,7 +456,7 @@ for (const regionMask of regions) {
   // 1. Potrace (premium quality - handles both lines and curves optimally)
   // 2. Improved contour + Custom Bezier (good quality fallback)
   // 3. Straight lines (basic fallback)
-  
+
   // Level 1: Always try Potrace first (best quality for all image types)
   try {
     const potracePathString = await traceWithPotrace(
@@ -445,7 +465,7 @@ for (const regionMask of regions) {
       height,
       config
     );
-    
+
     if (potracePathString) {
       // ✅ Successfully generated Potrace path!
       paths.push({
@@ -461,7 +481,7 @@ for (const regionMask of regions) {
     console.warn('Potrace failed, falling back to Custom Bezier:', error);
     // Fall through to Level 2
   }
-  
+
   // Level 2 & 3: Improved contour + Custom Bezier (or straight lines)
   const contours = findBoundaryContours(
     regionMask,
@@ -471,10 +491,10 @@ for (const regionMask of regions) {
     config.isCancelledRef,
     true // ✅ Always use improved algorithm
   );
-  
+
   for (const contour of contours) {
     // ...計算 points, type, area...
-    
+
     // Level 2: Always try Custom Bezier (fallback from Potrace)
     let svgPath: string | undefined;
     try {
@@ -487,7 +507,7 @@ for (const regionMask of regions) {
       console.error('Error generating bezier path:', error);
       svgPath = undefined; // Level 3: Straight lines fallback
     }
-    
+
     paths.push({ points, svgPath, ... });
   }
 }
@@ -503,8 +523,10 @@ interface PreprocessPanelProps {
   // ...其他 props...
   useBezierCurves?: boolean;
   onUseBezierCurvesChange?: (value: boolean) => void;
-  bezierAlgorithm?: 'custom' | 'potrace';
-  onBezierAlgorithmChange?: (value: 'custom' | 'potrace') => void;
+  bezierAlgorithm?: "custom" | "potrace";
+  onBezierAlgorithmChange?: (
+    value: "custom" | "potrace",
+  ) => void;
 }
 
 // ✅ 移除後
@@ -518,15 +540,16 @@ interface PreprocessPanelProps {
 
 **測試場景**:
 
-| 圖片類型 | 策略 | 結果 |
-|---------|------|------|
-| 直線圖(線稿) | Level 1: Potrace | ✅ 智能生成直線段 |
-| 曲線圖(圓形) | Level 1: Potrace | ✅ 平滑貝塞爾曲線 |
-| 混合圖 | Level 1: Potrace | ✅ 自適應處理 |
-| 細線條 (31x1) | Level 1: Potrace | ✅ 正確處理 |
-| 極小區域 (2x2) | Level 2: Custom Bezier | ✅ Fallback 正常 |
+| 圖片類型       | 策略                   | 結果              |
+| -------------- | ---------------------- | ----------------- |
+| 直線圖(線稿)   | Level 1: Potrace       | ✅ 智能生成直線段 |
+| 曲線圖(圓形)   | Level 1: Potrace       | ✅ 平滑貝塞爾曲線 |
+| 混合圖         | Level 1: Potrace       | ✅ 自適應處理     |
+| 細線條 (31x1)  | Level 1: Potrace       | ✅ 正確處理       |
+| 極小區域 (2x2) | Level 2: Custom Bezier | ✅ Fallback 正常  |
 
 **UI 簡化**:
+
 - ❌ 移除: "Use Bezier Curves" 開關
 - ❌ 移除: "Bezier Algorithm" 選擇器
 - ✅ 結果: 用戶無需設置,自動獲得最佳質量
@@ -549,11 +572,13 @@ interface PreprocessPanelProps {
 **時間**: 2026-01-13
 
 **背景**:
+
 - 原設計：3 個開關(Use Bezier Curves、Bezier Algorithm、Use Improved Tracing)
 - 用戶困惑：不知道如何選擇最佳設置
 - 測試發現：**Potrace 對所有類型的圖都是最佳選擇**
 
 **用戶反饋**:
+
 ```
 「我不知道什麼時候該開啟曲線」
 「Bezier Algorithm 選哪個比較好？」
@@ -561,6 +586,7 @@ interface PreprocessPanelProps {
 ```
 
 **測試結果**:
+
 ```
 直線圖 + Potrace → ✅ 智能生成直線,質量最佳
 曲線圖 + Potrace → ✅ 平滑貝塞爾曲線,質量最佳
@@ -576,7 +602,9 @@ interface PreprocessPanelProps {
 ```typescript
 // VectorizerTool.tsx
 const [useBezierCurves, setUseBezierCurves] = useState(true);
-const [bezierAlgorithm, setBezierAlgorithm] = useState<'custom' | 'potrace'>('custom');
+const [bezierAlgorithm, setBezierAlgorithm] = useState<
+  "custom" | "potrace"
+>("custom");
 
 // 傳遞給向量化函數
 const config: VectorizationConfig = {
@@ -586,7 +614,7 @@ const config: VectorizationConfig = {
 };
 
 // vectorization.ts
-if (config.bezierAlgorithm === 'potrace') {
+if (config.bezierAlgorithm === "potrace") {
   // 使用 Potrace
 } else if (config.useBezierCurves) {
   // 使用 Custom Bezier
@@ -596,6 +624,7 @@ if (config.bezierAlgorithm === 'potrace') {
 ```
 
 **問題**:
+
 - ❌ 用戶需要理解算法差異
 - ❌ 錯誤配置導致質量下降
 - ❌ 開關邏輯複雜,易出錯
@@ -630,7 +659,7 @@ for (const regionMask of regions) {
   } catch (error) {
     // ⚠️ Potrace 失敗,自動 Fallback
   }
-  
+
   // Level 2: Custom Bezier (Good) - Potrace 失敗時
   const contours = findBoundaryContours(...);
   for (const contour of contours) {
@@ -643,7 +672,7 @@ for (const regionMask of regions) {
     } catch (error) {
       svgPath = undefined; // ⚠️ Fallback 到 Level 3
     }
-    
+
     // Level 3: Straight Lines (Basic) - svgPath = undefined 時自動使用
     paths.push({ points, svgPath, ... });
   }
@@ -651,6 +680,7 @@ for (const regionMask of regions) {
 ```
 
 **優勢**:
+
 - ✅ 用戶零配置,系統自動優化
 - ✅ 永遠嘗試最佳算法(Potrace)
 - ✅ 失敗時自動降級,確保穩定
@@ -661,13 +691,17 @@ for (const regionMask of regions) {
 #### 1. VectorizerTool.tsx
 
 **移除狀態**:
+
 ```typescript
 // ❌ 移除
 const [useBezierCurves, setUseBezierCurves] = useState(true);
-const [bezierAlgorithm, setBezierAlgorithm] = useState<'custom' | 'potrace'>('custom');
+const [bezierAlgorithm, setBezierAlgorithm] = useState<
+  "custom" | "potrace"
+>("custom");
 ```
 
 **移除傳遞**:
+
 ```typescript
 // ❌ 移除
 const config: VectorizationConfig = {
@@ -680,9 +714,10 @@ const config: VectorizationConfig = {
 #### 2. vectorization.ts
 
 **移除接口字段**:
+
 ```typescript
 export interface VectorizationConfig {
-  mode: 'stroke' | 'fill' | 'mixed';
+  mode: "stroke" | "fill" | "mixed";
   precision: number;
   minArea: number;
   simplify: boolean;
@@ -697,6 +732,7 @@ export interface VectorizationConfig {
 ```
 
 **實現無條件 Fallback**:
+
 ```typescript
 // Line 605-695: Cluster-based vectorization
 for (const regionMask of regions) {
@@ -710,7 +746,7 @@ for (const regionMask of regions) {
   } catch (error) {
     console.warn('Potrace failed, falling back to Custom Bezier:', error);
   }
-  
+
   // Level 2 & 3: Improved contour + Custom Bezier → Straight lines
   const contours = findBoundaryContours(regionMask, width, height, 1000, config.isCancelledRef, true);
   for (const contour of contours) {
@@ -731,6 +767,7 @@ for (const regionMask of regions) {
 #### 3. PreprocessPanel.tsx
 
 **移除接口 props**:
+
 ```typescript
 interface PreprocessPanelProps {
   blurRadius: number;
@@ -744,8 +781,11 @@ interface PreprocessPanelProps {
 ```
 
 **移除函數參數**:
+
 ```typescript
-export const PreprocessPanel: React.FC<PreprocessPanelProps> = ({
+export const PreprocessPanel: React.FC<
+  PreprocessPanelProps
+> = ({
   blurRadius,
   threshold,
   // ...其他參數...
@@ -756,6 +796,7 @@ export const PreprocessPanel: React.FC<PreprocessPanelProps> = ({
 ```
 
 **移除 UI 開關**:
+
 ```typescript
 // ❌ 移除整個開關區塊
 // <div>
@@ -769,6 +810,7 @@ export const PreprocessPanel: React.FC<PreprocessPanelProps> = ({
 #### UI 簡化
 
 **改革前**:
+
 ```
 Step 3: 參數調整
 ├── Blur Radius: 2
@@ -781,6 +823,7 @@ Step 3: 參數調整
 ```
 
 **改革後**:
+
 ```
 Step 3: 參數調整
 ├── Blur Radius: 2
@@ -792,24 +835,24 @@ Step 3: 參數調整
 
 #### 代碼簡化
 
-| 指標 | 改革前 | 改革後 | 改善 |
-|-----|--------|--------|------|
-| VectorizerTool 狀態數 | 13 | 11 | -2 |
-| VectorizationConfig 字段數 | 11 | 9 | -2 |
-| PreprocessPanel props 數 | 18 | 14 | -4 |
-| 用戶決策點 | 3 | 0 | -3 |
-| 代碼邏輯分支 | 5+ | 0 | -5+ |
+| 指標                       | 改革前 | 改革後 | 改善 |
+| -------------------------- | ------ | ------ | ---- |
+| VectorizerTool 狀態數      | 13     | 11     | -2   |
+| VectorizationConfig 字段數 | 11     | 9      | -2   |
+| PreprocessPanel props 數   | 18     | 14     | -4   |
+| 用戶決策點                 | 3      | 0      | -3   |
+| 代碼邏輯分支               | 5+     | 0      | -5+  |
 
 #### 質量保證
 
 **所有場景自動使用最佳算法**:
 
-| 圖片類型 | 改革前 | 改革後 | 改善 |
-|---------|--------|--------|------|
-| 直線圖 | 用戶選擇 | ✅ 自動 Potrace | 質量穩定 |
-| 曲線圖 | 用戶選擇 | ✅ 自動 Potrace | 質量穩定 |
-| 混合圖 | 用戶選擇 | ✅ 自動 Potrace | 質量穩定 |
-| 細線條 | 可能失敗 | ✅ 自動 Fallback | 穩定性提升 |
+| 圖片類型 | 改革前   | 改革後           | 改善       |
+| -------- | -------- | ---------------- | ---------- |
+| 直線圖   | 用戶選擇 | ✅ 自動 Potrace  | 質量穩定   |
+| 曲線圖   | 用戶選擇 | ✅ 自動 Potrace  | 質量穩定   |
+| 混合圖   | 用戶選擇 | ✅ 自動 Potrace  | 質量穩定   |
+| 細線條   | 可能失敗 | ✅ 自動 Fallback | 穩定性提升 |
 | 極小區域 | 可能失敗 | ✅ 自動 Fallback | 穩定性提升 |
 
 ### 🎓 設計哲學
@@ -817,11 +860,13 @@ Step 3: 參數調整
 #### 1. 自動化優於配置
 
 **舊思維**: 給用戶選項,讓用戶配置
+
 ```
 ❌ 問題：用戶不懂算法,配置錯誤導致質量下降
 ```
 
 **新思維**: 系統自動選擇最佳方案
+
 ```
 ✅ 優勢：用戶專注於創作,系統保證質量
 ```
@@ -829,6 +874,7 @@ Step 3: 參數調整
 #### 2. 漸進降級策略
 
 **Fallback 金字塔**:
+
 ```
         🥇 Level 1: Potrace (Premium)
               ↓ (失敗)
@@ -838,6 +884,7 @@ Step 3: 參數調整
 ```
 
 **保證**:
+
 - ✅ 總是嘗試最佳方案
 - ✅ 失敗時自動降級
 - ✅ 最差情況仍有基本質量
@@ -846,9 +893,13 @@ Step 3: 參數調整
 #### 3. 代碼即文檔
 
 **舊代碼**: 需要註釋解釋複雜邏輯
+
 ```typescript
 // ❌ 需要大量註釋
-if (config.bezierAlgorithm === 'potrace' && config.useBezierCurves !== false) {
+if (
+  config.bezierAlgorithm === "potrace" &&
+  config.useBezierCurves !== false
+) {
   // 使用 Potrace 算法生成平滑曲線
   // ...
 } else if (config.useBezierCurves) {
@@ -861,6 +912,7 @@ if (config.bezierAlgorithm === 'potrace' && config.useBezierCurves !== false) {
 ```
 
 **新代碼**: 自解釋的清晰結構
+
 ```typescript
 // ✅ 清晰的三級結構,無需過多註釋
 // Level 1: Always try Potrace first
@@ -902,6 +954,7 @@ paths.push({ points, svgPath });
 **時間**: 2026-01-13
 
 **現象**:
+
 - Potrace 跳過某些細線條區域
 - 控制台警告：
   ```
@@ -917,23 +970,26 @@ paths.push({ points, svgPath });
 **位置**: `vectorization.ts` - `traceWithPotrace()` 函數 (Line 215)
 
 **原始代碼**:
+
 ```typescript
 function traceWithPotrace(
   mask: Uint8Array,
   width: number,
   height: number,
-  config: VectorizationConfig
+  config: VectorizationConfig,
 ): Promise<string | null> {
   return new Promise((resolve) => {
     // ...計算 bounding box...
-    
+
     // ❌ 問題：尺寸檢查太嚴格
     if (bbox.width < 3 || bbox.height < 3) {
-      console.warn(`⚠️ Potrace: Region too small (${bbox.width}x${bbox.height}), skipping`);
+      console.warn(
+        `⚠️ Potrace: Region too small (${bbox.width}x${bbox.height}), skipping`,
+      );
       resolve(null);
       return;
     }
-    
+
     // ...後續 Potrace 處理...
   });
 }
@@ -960,6 +1016,7 @@ function traceWithPotrace(
 **為何原本設置為 `< 3`？**:
 
 早期開發時的考慮：
+
 ```typescript
 // 原始假設(錯誤)
 // "Potrace 無法處理 1 像素線條"
@@ -973,26 +1030,29 @@ function traceWithPotrace(
 ### ✅ 解決方案：更寬容的尺寸檢查
 
 **修復代碼**:
+
 ```typescript
 function traceWithPotrace(
   mask: Uint8Array,
   width: number,
   height: number,
-  config: VectorizationConfig
+  config: VectorizationConfig,
 ): Promise<string | null> {
   return new Promise((resolve) => {
     // ...計算 bounding box...
-    
+
     // ✅ FIXED: More lenient size check - allow thin lines
     // Skip only if BOTH dimensions are tiny (< 2px), or total area is < 4px
     // This allows thin lines like 31x1, 2x29, 69x1 to be processed
     const area = bbox.width * bbox.height;
     if ((bbox.width < 2 && bbox.height < 2) || area < 4) {
-      console.warn(`⚠️ Potrace: Region too small (${bbox.width}x${bbox.height}, area=${area}), skipping`);
+      console.warn(
+        `⚠️ Potrace: Region too small (${bbox.width}x${bbox.height}, area=${area}), skipping`,
+      );
       resolve(null);
       return;
     }
-    
+
     // ✅ 細線條現在可以通過檢查了！
     // ...後續 Potrace 處理...
   });
@@ -1021,39 +1081,39 @@ function traceWithPotrace(
 
 **舊邏輯**: `if (bbox.width < 3 || bbox.height < 3)`
 
-| 區域尺寸 | 面積 | 舊邏輯 | 問題 |
-|---------|------|--------|------|
-| 1x1 | 1 | ❌ 跳過 | ✅ 正確(噪點) |
-| 1x2 | 2 | ❌ 跳過 | ✅ 正確(噪點) |
-| 2x2 | 4 | ❌ 跳過 | ❌ 錯誤(應處理) |
+| 區域尺寸 | 面積   | 舊邏輯      | 問題              |
+| -------- | ------ | ----------- | ----------------- |
+| 1x1      | 1      | ❌ 跳過     | ✅ 正確(噪點)     |
+| 1x2      | 2      | ❌ 跳過     | ✅ 正確(噪點)     |
+| 2x2      | 4      | ❌ 跳過     | ❌ 錯誤(應處理)   |
 | **31x1** | **31** | ❌ **跳過** | ❌ **錯誤(細線)** |
 | **2x29** | **58** | ❌ **跳過** | ❌ **錯誤(細線)** |
 | **69x1** | **69** | ❌ **跳過** | ❌ **錯誤(細線)** |
-| 3x3 | 9 | ✅ 處理 | ✅ 正確 |
+| 3x3      | 9      | ✅ 處理     | ✅ 正確           |
 
 **新邏輯**: `if ((bbox.width < 2 && bbox.height < 2) || area < 4)`
 
-| 區域尺寸 | 面積 | 新邏輯 | 結果 |
-|---------|------|--------|------|
-| 1x1 | 1 | ❌ 跳過 | ✅ 正確(噪點) |
-| 1x2 | 2 | ❌ 跳過 | ✅ 正確(噪點) |
-| 2x2 | 4 | ✅ 處理 | ✅ 正確(最小形狀) |
-| **31x1** | **31** | ✅ **處理** | ✅ **修復！** |
-| **2x29** | **58** | ✅ **處理** | ✅ **修復！** |
-| **69x1** | **69** | ✅ **處理** | ✅ **修復！** |
-| 3x3 | 9 | ✅ 處理 | ✅ 正確 |
+| 區域尺寸 | 面積   | 新邏輯      | 結果              |
+| -------- | ------ | ----------- | ----------------- |
+| 1x1      | 1      | ❌ 跳過     | ✅ 正確(噪點)     |
+| 1x2      | 2      | ❌ 跳過     | ✅ 正確(噪點)     |
+| 2x2      | 4      | ✅ 處理     | ✅ 正確(最小形狀) |
+| **31x1** | **31** | ✅ **處理** | ✅ **修復！**     |
+| **2x29** | **58** | ✅ **處理** | ✅ **修復！**     |
+| **69x1** | **69** | ✅ **處理** | ✅ **修復！**     |
+| 3x3      | 9      | ✅ 處理     | ✅ 正確           |
 
 ### 📊 驗證結果
 
 **測試場景**:
 
-| 圖片內容 | 修復前 | 修復後 |
-|---------|--------|--------|
+| 圖片內容       | 修復前                  | 修復後          |
+| -------------- | ----------------------- | --------------- |
 | 細橫線條(50x1) | ⚠️ 跳過 → Custom Bezier | ✅ Potrace 處理 |
 | 細豎線條(1x50) | ⚠️ 跳過 → Custom Bezier | ✅ Potrace 處理 |
-| 極小矩形(2x2) | ⚠️ 跳過 | ✅ Potrace 處理 |
-| 噪點(1x1) | ✅ 跳過 | ✅ 跳過 |
-| 正常形狀 | ✅ Potrace | ✅ Potrace |
+| 極小矩形(2x2)  | ⚠️ 跳過                 | ✅ Potrace 處理 |
+| 噪點(1x1)      | ✅ 跳過                 | ✅ 跳過         |
+| 正常形狀       | ✅ Potrace              | ✅ Potrace      |
 
 **控制台輸出**:
 
@@ -1072,7 +1132,7 @@ function traceWithPotrace(
 ### 🎓 經驗教訓
 
 1. **面積比單維尺寸更重要**: 31x1 雖然高度只有 1,但面積為 31,是有效形狀
-2. **AND vs OR 的重要性**: 
+2. **AND vs OR 的重要性**:
    - 舊: `width < 3 OR height < 3` → 過於嚴格
    - 新: `width < 2 AND height < 2` → 只跳過真正的極小區域
 3. **多條件組合**: `(both < 2) OR (area < 4)` 更精確地定義"太小"
@@ -1090,11 +1150,13 @@ function traceWithPotrace(
 **時間**: 2026-01-13
 
 **背景**:
+
 - 原設計：固定限制每個顏色最多200個區域,總共最多500個路徑
 - 實際需求：馬賽克圖片可能有幾千個小方塊,但只有2-4種顏色
 - 性能瓶頸：簡單形狀被錯誤限制,複雜圖片缺乏保護
 
 **問題場景**:
+
 ```
 馬賽克圖片 (50x50 = 2500 個方塊, 4 種顏色)
 ├── 當前限制: 200 個區域/顏色 → ❌ 只能處理 800/2500 個方塊
@@ -1108,6 +1170,7 @@ function traceWithPotrace(
 ```
 
 **核心洞察**:
+
 ```
 顏色數量 ≈ 圖片複雜度
 - 少量顏色 (≤4) = 簡單幾何圖形 (馬賽克、Logo等)
@@ -1119,21 +1182,29 @@ function traceWithPotrace(
 **位置**: `vectorization.ts` - Line 895-896
 
 **原始代碼**:
+
 ```typescript
 // ❌ 固定限制,不考慮圖片複雜度
 const MAX_REGIONS_PER_CLUSTER = 200; // 每個顏色最多200個區域
-const MAX_TOTAL_PATHS = 500;          // 總共最多500個路徑
+const MAX_TOTAL_PATHS = 500; // 總共最多500個路徑
 
 // 🎯 Generate batches with smart filtering (prioritize large regions)
-for (const batch of generateRegionBatches(clusterMask, width, height, config.minArea, 1, MAX_REGIONS_PER_CLUSTER)) {
+for (const batch of generateRegionBatches(
+  clusterMask,
+  width,
+  height,
+  config.minArea,
+  1,
+  MAX_REGIONS_PER_CLUSTER,
+)) {
   batchCount++;
   totalRegions += batch.length;
-  
+
   // 🔧 Global path limit (safety check)
   if (paths.length >= MAX_TOTAL_PATHS) {
     return paths; // ❌ 固定限制導致馬賽克圖片不完整
   }
-  
+
   // Process regions...
 }
 ```
@@ -1173,19 +1244,28 @@ MAX_REGIONS_PER_CLUSTER = 200
 // 🎯 ADAPTIVE LIMITS: Simple images with few colors can handle many more regions
 // Few colors (≤4) = simple shapes like mosaic tiles → No region limit needed
 // Many colors (>4) = complex images → Keep 200 region safety limit
-const MAX_REGIONS_PER_CLUSTER = config.clusterCount <= 4 ? Infinity : 200;
-const MAX_TOTAL_PATHS = config.clusterCount <= 4 ? Infinity : 500;
+const MAX_REGIONS_PER_CLUSTER =
+  config.clusterCount <= 4 ? Infinity : 200;
+const MAX_TOTAL_PATHS =
+  config.clusterCount <= 4 ? Infinity : 500;
 
 // 🎯 Generate batches with smart filtering (prioritize large regions)
-for (const batch of generateRegionBatches(clusterMask, width, height, config.minArea, 1, MAX_REGIONS_PER_CLUSTER)) {
+for (const batch of generateRegionBatches(
+  clusterMask,
+  width,
+  height,
+  config.minArea,
+  1,
+  MAX_REGIONS_PER_CLUSTER,
+)) {
   batchCount++;
   totalRegions += batch.length;
-  
+
   // 🔧 Global path limit (safety check - should rarely trigger now)
   if (paths.length >= MAX_TOTAL_PATHS) {
     return paths;
   }
-  
+
   // Process regions...
 }
 ```
@@ -1207,22 +1287,22 @@ function* generateRegionBatches(
   height: number,
   minArea: number,
   batchSize: number = 3,
-  maxRegions: number = 200  // ✅ 可以接受 Infinity
+  maxRegions: number = 200, // ✅ 可以接受 Infinity
 ): Generator<Uint8Array[], void, unknown> {
   const visited = new Uint8Array(mask.length);
-  
+
   // 🎯 STEP 1: Collect ALL regions with their pixel counts
   interface RegionInfo {
     mask: Uint8Array;
     pixelCount: number;
   }
   const allRegions: RegionInfo[] = [];
-  
+
   // Flood fill to find connected components
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
       const idx = y * width + x;
-      
+
       if (mask[idx] > 0 && !visited[idx]) {
         // Found a new region - flood fill it
         const regionMask = new Uint8Array(mask.length);
@@ -1230,10 +1310,10 @@ function* generateRegionBatches(
         visited[idx] = 1;
         regionMask[idx] = 255;
         let pixelCount = 1;
-        
+
         while (queue.length > 0) {
           const [cx, cy] = queue.shift()!;
-          
+
           // Check 4 neighbors
           const neighbors = [
             [cx - 1, cy],
@@ -1241,9 +1321,14 @@ function* generateRegionBatches(
             [cx, cy - 1],
             [cx, cy + 1],
           ];
-          
+
           for (const [nx, ny] of neighbors) {
-            if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
+            if (
+              nx >= 0 &&
+              nx < width &&
+              ny >= 0 &&
+              ny < height
+            ) {
               const nIdx = ny * width + nx;
               if (mask[nIdx] > 0 && !visited[nIdx]) {
                 visited[nIdx] = 1;
@@ -1254,7 +1339,7 @@ function* generateRegionBatches(
             }
           }
         }
-        
+
         // Only consider regions above minimum area
         if (pixelCount >= minArea) {
           allRegions.push({ mask: regionMask, pixelCount });
@@ -1262,23 +1347,23 @@ function* generateRegionBatches(
       }
     }
   }
-  
+
   // 🎯 STEP 2: Sort by area (descending) and take top N
   // This ensures we vectorize the largest/most important regions first
   allRegions.sort((a, b) => b.pixelCount - a.pixelCount);
   const selectedRegions = allRegions.slice(0, maxRegions); // ✅ slice(0, Infinity) 返回所有元素
-  
+
   // 🎯 STEP 3: Yield in batches
   let currentBatch: Uint8Array[] = [];
   for (const region of selectedRegions) {
     currentBatch.push(region.mask);
-    
+
     if (currentBatch.length >= batchSize) {
       yield currentBatch;
       currentBatch = []; // Clear batch after yielding (allows GC)
     }
   }
-  
+
   // Yield remaining regions in final batch
   if (currentBatch.length > 0) {
     yield currentBatch;
@@ -1290,10 +1375,10 @@ function* generateRegionBatches(
 
 **策略表**:
 
-| 顏色數量 | 圖片類型 | 區域限制/顏色 | 總路徑限制 | 適用場景 |
-|---------|---------|--------------|-----------|---------|
-| **1-4** | 簡單幾何 | **Infinity** | **Infinity** | 馬賽克、Logo、圖示 |
-| **5+** | 複雜圖片 | **200** | **500** | 照片、漸變、複雜插畫 |
+| 顏色數量 | 圖片類型 | 區域限制/顏色 | 總路徑限制   | 適用場景             |
+| -------- | -------- | ------------- | ------------ | -------------------- |
+| **1-4**  | 簡單幾何 | **Infinity**  | **Infinity** | 馬賽克、Logo、圖示   |
+| **5+**   | 複雜圖片 | **200**       | **500**      | 照片、漸變、複雜插畫 |
 
 **自適應邏輯**:
 
@@ -1301,19 +1386,18 @@ function* generateRegionBatches(
 // 判斷條件
 if (config.clusterCount <= 4) {
   // 🎨 簡單圖形模式
-  MAX_REGIONS_PER_CLUSTER = Infinity  // 無限制
-  MAX_TOTAL_PATHS = Infinity           // 無限制
-  
+  MAX_REGIONS_PER_CLUSTER = Infinity; // 無限制
+  MAX_TOTAL_PATHS = Infinity; // 無限制
+
   // 為什麼安全？
   // - 少量顏色 → 每個形狀都很簡單
   // - 形狀簡單 → 處理速度快
   // - 總量可控 → 即使幾千個形狀,總處理時間 < 5s
-  
 } else {
   // 📷 複雜圖片模式
-  MAX_REGIONS_PER_CLUSTER = 200  // 嚴格限制
-  MAX_TOTAL_PATHS = 500           // 嚴格限制
-  
+  MAX_REGIONS_PER_CLUSTER = 200; // 嚴格限制
+  MAX_TOTAL_PATHS = 500; // 嚴格限制
+
   // 為什麼必要？
   // - 大量顏色 → 形狀複雜多樣
   // - 形狀複雜 → 處理速度慢
@@ -1326,6 +1410,7 @@ if (config.clusterCount <= 4) {
 #### 場景 1: 馬賽克圖片 (50x50 = 2500 方塊, 4 種顏色)
 
 **修復前**:
+
 ```
 clusterCount = 4
 MAX_REGIONS_PER_CLUSTER = 200 (固定)
@@ -1344,6 +1429,7 @@ MAX_TOTAL_PATHS = 500 (固定)
 ```
 
 **修復後**:
+
 ```
 clusterCount = 4
 MAX_REGIONS_PER_CLUSTER = Infinity ✅
@@ -1365,6 +1451,7 @@ MAX_TOTAL_PATHS = Infinity ✅
 #### 場景 2: 複雜照片 (5000 個區域, 10 種顏色)
 
 **修復前**:
+
 ```
 clusterCount = 10
 MAX_REGIONS_PER_CLUSTER = 200 (固定)
@@ -1379,6 +1466,7 @@ MAX_TOTAL_PATHS = 500 (固定)
 ```
 
 **修復後**:
+
 ```
 clusterCount = 10
 MAX_REGIONS_PER_CLUSTER = 200 ✅
@@ -1402,13 +1490,18 @@ MAX_TOTAL_PATHS = 500 ✅
 // - 減少無意義的區域處理
 
 // Layer 2: 複雜度檢測 (Potrace 內部)
-const complexity = estimateTextureComplexity(bbox.width, bbox.height);
+const complexity = estimateTextureComplexity(
+  bbox.width,
+  bbox.height,
+);
 if (complexity > 20) {
   // 跳過極其複雜的紋理區域
 }
 
 // Layer 3: 寬高比檢測 (Potrace 內部)
-const aspectRatio = Math.max(bbox.width, bbox.height) / Math.min(bbox.width, bbox.height);
+const aspectRatio =
+  Math.max(bbox.width, bbox.height) /
+  Math.min(bbox.width, bbox.height);
 if (aspectRatio > 20 || aspectRatio < 0.05) {
   // 跳過極端寬高比的區域
 }
@@ -1430,6 +1523,7 @@ if (bbox.width > 500 || bbox.height > 500) {
 ```
 
 **因此**:
+
 ```
 即使 Infinity 限制 + 馬賽克幾千個方塊
 = 仍然安全,因為:
@@ -1446,28 +1540,29 @@ if (bbox.width > 500 || bbox.height > 500) {
 
 **馬賽克圖片測試** (50x50 = 2500 方塊, 4 種顏色):
 
-| 指標 | 修復前 | 修復後 | 改善 |
-|-----|--------|--------|------|
-| 處理區域數 | 800/2500 (32%) | 2500/2500 (100%) | +212% |
-| 完整度 | 不完整 ❌ | 完整 ✅ | 完美 |
-| 處理時間 | ~2 秒 | ~4 秒 | 可接受 |
-| 記憶體峰值 | ~50MB | ~80MB | 可接受 |
-| 用戶滿意度 | 困惑 | 滿意 | +100% |
+| 指標       | 修復前         | 修復後           | 改善   |
+| ---------- | -------------- | ---------------- | ------ |
+| 處理區域數 | 800/2500 (32%) | 2500/2500 (100%) | +212%  |
+| 完整度     | 不完整 ❌      | 完整 ✅          | 完美   |
+| 處理時間   | ~2 秒          | ~4 秒            | 可接受 |
+| 記憶體峰值 | ~50MB          | ~80MB            | 可接受 |
+| 用戶滿意度 | 困惑           | 滿意             | +100%  |
 
 **複雜照片測試** (5000 個區域, 10 種顏色):
 
-| 指標 | 修復前 | 修復後 | 改善 |
-|-----|--------|--------|------|
-| 處理區域數 | ~2000 | ~500 (受限) | 保持保護 |
-| 穩定性 | 偶爾卡死 ⚠️ | 穩定 ✅ | +100% |
-| 處理時間 | 不確定 | ~5 秒 | 可預測 |
-| 記憶體峰值 | 不確定 | ~100MB | 可控 |
+| 指標       | 修復前      | 修復後      | 改善     |
+| ---------- | ----------- | ----------- | -------- |
+| 處理區域數 | ~2000       | ~500 (受限) | 保持保護 |
+| 穩定性     | 偶爾卡死 ⚠️ | 穩定 ✅     | +100%    |
+| 處理時間   | 不確定      | ~5 秒       | 可預測   |
+| 記憶體峰值 | 不確定      | ~100MB      | 可控     |
 
 ### 🎓 設計哲學
 
 #### 1. 自適應策略優於固定限制
 
 **舊思維**: 一刀切的固定限制
+
 ```
 ❌ 問題：
 - 簡單圖形被過度限制
@@ -1476,6 +1571,7 @@ if (bbox.width > 500 || bbox.height > 500) {
 ```
 
 **新思維**: 根據複雜度動態調整
+
 ```
 ✅ 優勢：
 - 簡單圖形無限制 → 完整處理
@@ -1486,6 +1582,7 @@ if (bbox.width > 500 || bbox.height > 500) {
 #### 2. 多層保護優於單點限制
 
 **舊策略**: 只靠路徑數量限制
+
 ```
 ❌ 問題：
 - 單點失效風險
@@ -1493,6 +1590,7 @@ if (bbox.width > 500 || bbox.height > 500) {
 ```
 
 **新策略**: 6 層保護機制
+
 ```
 ✅ 優勢：
 - 多層防護 → 更安全
@@ -1503,6 +1601,7 @@ if (bbox.width > 500 || bbox.height > 500) {
 #### 3. 顏色數量作為複雜度指標
 
 **核心洞察**:
+
 ```
 clusterCount ≈ 圖片複雜度
 
@@ -1518,6 +1617,7 @@ clusterCount > 4:
 ```
 
 **為何有效**:
+
 ```
 ✅ 簡單 → 少量顏色 → 自動無限制
 ✅ 複雜 → 大量顏色 → 自動嚴格限制
@@ -1646,14 +1746,14 @@ v2.0: 自動優化驅動 (當前版本)
 
 ### 代碼質量提升
 
-| 指標 | 改進前 | 改進後 | 改善 |
-|-----|--------|--------|------|
-| 用戶配置項 | 3 | 0 | -100% |
-| 狀態變量數 | 13 | 11 | -15% |
-| 代碼分支數 | 5+ | 0 | -100% |
-| Potrace 成功率 | ~60% | ~95% | +58% |
-| 馬賽克完整度 | 32% | 100% | +212% |
-| 用戶滿意度 | 混亂 | 簡潔 | +100% |
+| 指標           | 改進前 | 改進後 | 改善  |
+| -------------- | ------ | ------ | ----- |
+| 用戶配置項     | 3      | 0      | -100% |
+| 狀態變量數     | 13     | 11     | -15%  |
+| 代碼分支數     | 5+     | 0      | -100% |
+| Potrace 成功率 | ~60%   | ~95%   | +58%  |
+| 馬賽克完整度   | 32%    | 100%   | +212% |
+| 用戶滿意度     | 混亂   | 簡潔   | +100% |
 
 ### 設計原則總結
 
@@ -1673,6 +1773,7 @@ v2.0: 自動優化驅動 (當前版本)
 **時間**: 2026-01-13
 
 **現象**:
+
 - Step 4 的 PathLayerPanel 中路徑縮圖幾乎全部空白
 - 只有極少數大面積路徑才顯示
 - 路徑數據正常生成,主畫布正確顯示
@@ -1688,11 +1789,13 @@ v2.0: 自動優化驅動 (當前版本)
 **核心思想**: 動態解析 SVG path 字符串 → 計算真實座標範圍 → 生成匹配的 viewBox
 
 **新增函數**:
+
 1. `parseSvgPathBounds()`: 提取 SVG path 中所有座標,計算邊界框
 2. `renderPathFromSvgString()`: 使用動態 viewBox 渲染 SVG path
 3. `renderPathFromPoints()`: 原有的 points 渲染邏輯
 
 **效果**:
+
 - 修復前: 95%+ 縮圖空白 ❌
 - 修復後: 100% 縮圖清晰顯示 ✅
 
@@ -1707,6 +1810,7 @@ v2.0: 自動優化驅動 (當前版本)
 **時間**: 2026-01-14
 
 **現象**:
+
 - 上傳 704×1472 PNG 圖片時灰屏卡死
 - 圖片被切割成 71 個 region，所有 region 都能成功處理
 - 系統在處理最後一個 region (1×20，aspect ratio = 0.05) 後卡住
@@ -1717,6 +1821,7 @@ v2.0: 自動優化驅動 (當前版本)
 **位置**: `vectorization.ts` - `traceWithPotrace()` 函數 (Line ~471)
 
 **原始代碼**:
+
 ```typescript
 // ❌ 錯誤：邊界條件不包含等於
 if (aspectRatio > 20 || aspectRatio < 0.05) {
@@ -1726,6 +1831,7 @@ if (aspectRatio > 20 || aspectRatio < 0.05) {
 ```
 
 **問題邏輯**:
+
 ```typescript
 // 測試案例
 1×20 → aspectRatio = 1/20 = 0.05
@@ -1754,6 +1860,7 @@ if (aspectRatio >= 20 || aspectRatio <= 0.05) {
 ```
 
 **修復後邏輯**:
+
 ```typescript
 // 測試案例
 1×20 → aspectRatio = 0.05
@@ -1769,16 +1876,17 @@ if (aspectRatio >= 20 || aspectRatio <= 0.05) {
 
 **測試圖片**: 704×1472 PNG (4 colors, 71 regions)
 
-| Region 尺寸 | Aspect Ratio | 修復前 | 修復後 |
-|------------|--------------|--------|--------|
-| 1×20 | 0.05 | ❌ 進入 Potrace 卡死 | ✅ 跳過 → Bezier |
-| 20×1 | 20.0 | ❌ 進入 Potrace 卡死 | ✅ 跳過 → Bezier |
-| 1×19 | 0.0526 | ✅ 正常處理 | ✅ 正常處理 |
-| 19×1 | 19.0 | ✅ 正常處理 | ✅ 正常處理 |
+| Region 尺寸 | Aspect Ratio | 修復前               | 修復後           |
+| ----------- | ------------ | -------------------- | ---------------- |
+| 1×20        | 0.05         | ❌ 進入 Potrace 卡死 | ✅ 跳過 → Bezier |
+| 20×1        | 20.0         | ❌ 進入 Potrace 卡死 | ✅ 跳過 → Bezier |
+| 1×19        | 0.0526       | ✅ 正常處理          | ✅ 正常處理      |
+| 19×1        | 19.0         | ✅ 正常處理          | ✅ 正常處理      |
 
 ### 🧹 額外清理
 
 在修復此問題時，順便移除了所有調試用的 `[DEBUG]` log (5處)：
+
 - `[DEBUG] Calling vectorizeImage...`
 - `[DEBUG] vectorizeImage returned X paths`
 - `[DEBUG] Updating state with paths...`
@@ -1786,6 +1894,7 @@ if (aspectRatio >= 20 || aspectRatio <= 0.05) {
 - `[DEBUG] Done!`
 
 保留必要的訊息：
+
 - ✅ `console.error` (錯誤處理)
 - ✅ `console.warn` (警告訊息)
 - ✅ 'Vectorization cancelled by user' (用戶反饋)
