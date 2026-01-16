@@ -23,7 +23,7 @@ function App() {
   // Initialize Google Analytics on app mount
   useEffect(() => {
     initGA();
-    logPageView('/', 'Home Page');
+    logPageView('/', 'Craft TooBox Home Page');
   }, []);
 
   // Track tool navigation
@@ -35,7 +35,7 @@ function App() {
       logPageView('/vectorizer-tool', 'Vectorizer Tool');
       logToolUsage('Vectorizer Tool', 'open');
     } else if (currentTool === null) {
-      logPageView('/', 'Home Page');
+      logPageView('/', 'Craft ToolBox Home Page');
     }
   }, [currentTool]);
 

@@ -18,6 +18,34 @@ const GA_MEASUREMENT_ID = 'G-XXXXXXXXXX'; // ← 改為您的 ID
 
 ---
 
+## 🔍 看不到數據？
+
+### 快速診斷（2 分鐘）
+
+1. **按 F12 打開控制台**，應該看到：
+   ```
+   ✅ Google Analytics initialized successfully
+   📊 Measurement ID: G-GWJH5XZQ1R
+   ✅ gtag function is available
+   ```
+
+2. **檢查 Network 標籤**，搜索 `google-analytics`：
+   - ✅ 狀態碼 200 = 正常
+   - ❌ blocked = 被廣告攔截器阻擋
+
+3. **等待 5-10 分鐘**，然後查看 GA 即時報表
+
+### 📖 詳細診斷指南
+查看 `GA_TROUBLESHOOTING.md` 了解完整的排查步驟和解決方案。
+
+### 常見問題：
+- **廣告攔截器**: 暫時關閉 AdBlock/uBlock
+- **瀏覽器隱私保護**: 關閉追蹤保護或使用無痕模式
+- **測量 ID 錯誤**: 確認是 GA4 的 `G-` 開頭（不是 `UA-`）
+- **數據延遲**: 即時報表需要 5-10 分鐘
+
+---
+
 ## 📊 自動追蹤的內容
 
 ✅ **頁面瀏覽**
@@ -34,5 +62,6 @@ const GA_MEASUREMENT_ID = 'G-XXXXXXXXXX'; // ← 改為您的 ID
 
 ---
 
-## 📖 詳細文檔
-查看 `GOOGLE_ANALYTICS_SETUP.md` 了解完整設置指南和進階功能。
+## 📖 完整文檔
+- `GA_TROUBLESHOOTING.md` - 診斷和排查指南
+- `GOOGLE_ANALYTICS_SETUP.md` - 完整設置指南和進階功能

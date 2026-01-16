@@ -12,25 +12,44 @@ import ReactGA from 'react-ga4';
 // ⚠️ 重要：請替換為您的 Google Analytics 4 測量 ID
 const GA_MEASUREMENT_ID = 'G-GWJH5XZQ1R'; // 替換為您的實際測量 ID
 
+// 開發模式下開啟詳細日誌
+const isDevelopment = import.meta.env.DEV;
+
 /**
  * 初始化 Google Analytics
  */
 export const initGA = (): void => {
   try {
+    if (isDevelopment) {
+      console.log('🔧 [GA Debug] Initializing Google Analytics...');
+      console.log('🔧 [GA Debug] Measurement ID:', GA_MEASUREMENT_ID);
+      console.log('🔧 [GA Debug] Environment:', import.meta.env.MODE);
+    }
+
     ReactGA.initialize(GA_MEASUREMENT_ID, {
       gaOptions: {
         // 可選配置
         anonymizeIp: true, // 匿名化 IP 地址，遵守隱私法規
+        debug_mode: isDevelopment, // 開發環境下啟用調試模式
       },
       gtagOptions: {
         // 可選配置
         send_page_view: false, // 禁用自動頁面瀏覽追蹤，手動控制
+        debug_mode: isDevelopment, // 開發環境下啟用調試模式
       },
     });
     
-    console.log('Google Analytics initialized');
+    console.log('✅ Google Analytics initialized successfully');
+    console.log('📊 Measurement ID:', GA_MEASUREMENT_ID);
+    
+    // 驗證 gtag 是否可用
+    if (typeof window !== 'undefined' && typeof (window as any).gtag !== 'undefined') {
+      console.log('✅ gtag function is available');
+    } else {
+      console.warn('⚠️ gtag function is NOT available - GA may be blocked');
+    }
   } catch (error) {
-    console.error('Failed to initialize Google Analytics:', error);
+    console.error('❌ Failed to initialize Google Analytics:', error);
   }
 };
 
@@ -41,13 +60,19 @@ export const initGA = (): void => {
  */
 export const logPageView = (path: string, title?: string): void => {
   try {
+    if (isDevelopment) {
+      console.log('📄 [GA Debug] Page View:', { path, title: title || document.title });
+    }
+    
     ReactGA.send({
       hitType: 'pageview',
       page: path,
       title: title || document.title,
     });
+    
+    console.log('📊 GA Page View sent:', path);
   } catch (error) {
-    console.error('Failed to log page view:', error);
+    console.error('❌ Failed to log page view:', error);
   }
 };
 
@@ -65,14 +90,20 @@ export const logEvent = (
   value?: number
 ): void => {
   try {
+    if (isDevelopment) {
+      console.log('🎯 [GA Debug] Event:', { category, action, label, value });
+    }
+    
     ReactGA.event({
       category,
       action,
       label,
       value,
     });
+    
+    console.log('📊 GA Event sent:', { category, action, label });
   } catch (error) {
-    console.error('Failed to log event:', error);
+    console.error('❌ Failed to log event:', error);
   }
 };
 
