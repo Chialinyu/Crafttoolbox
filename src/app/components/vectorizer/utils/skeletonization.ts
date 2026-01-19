@@ -39,7 +39,6 @@ export function zhangSuenThinning(
   for (let i = 0; i < binary.length; i++) {
     if (binary[i] > 0) initialCount++;
   }
-  console.log(`🎨 Zhang-Suen: Initial foreground pixels: ${initialCount}`);
   
   while (hasChanged && iteration < MAX_ITERATIONS) {
     hasChanged = false;
@@ -110,8 +109,6 @@ export function zhangSuenThinning(
   for (let i = 0; i < skeleton.length; i++) {
     if (skeleton[i] > 0) finalCount++;
   }
-  console.log(`🎨 Zhang-Suen: Completed after ${iteration} iterations`);
-  console.log(`🎨 Zhang-Suen: Final skeleton pixels: ${finalCount} (reduced by ${((1 - finalCount/initialCount) * 100).toFixed(1)}%)`);
   
   return skeleton;
 }
@@ -151,8 +148,6 @@ export function traceSkeletonPaths(
   // Find all junction points and endpoints
   const junctions = findJunctions(skeleton, width, height);
   const endpoints = findEndpoints(skeleton, width, height);
-  
-  console.log(`🎨 Path Tracing: Found ${endpoints.length} endpoints, ${junctions.size} junctions`);
   
   // Start tracing from endpoints
   for (const endpoint of endpoints) {
@@ -210,16 +205,8 @@ export function traceSkeletonPaths(
   const longPaths = pathLengths.filter(len => len > 20).length;
   const avgLength = pathLengths.length > 0 ? (pathLengths.reduce((a, b) => a + b, 0) / pathLengths.length).toFixed(1) : 0;
   
-  console.log(`🎨 Path Tracing: Generated ${paths.length} total paths`);
-  console.log(`   📊 Distribution: ${shortPaths} short (≤5pts), ${mediumPaths} medium (6-20pts), ${longPaths} long (>20pts)`);
-  console.log(`   📏 Average length: ${avgLength} points`);
-  
   // 🔧 POST-PROCESSING: Merge paths with nearby endpoints (gap closing)
   const mergedPaths = mergeNearbyPaths(paths, 5); // 5px max gap
-  
-  if (mergedPaths.length < paths.length) {
-    console.log(`   🔗 Gap Closing: Merged ${paths.length} paths → ${mergedPaths.length} paths`);
-  }
   
   return mergedPaths;
 }
@@ -372,8 +359,6 @@ export function computeDistanceTransform(
     }
   }
   
-  console.log(`🎨 Distance Transform: Computed for ${width}x${height} image`);
-  
   return distances;
 }
 
@@ -419,10 +404,6 @@ function findJunctions(
       }
     }
   }
-  
-  console.log(`🎯 Junction Detection: CN stats - CN=1: ${cnStats.cn1}, CN=2: ${cnStats.cn2}, CN≥3: ${cnStats.cn3plus}`);
-  console.log(`🎯 X-Crossings detected (CN=2, neighbors=4): ${cnStats.xCross}`);
-  console.log(`🎯 Total junctions found: ${junctions.size}`);
   
   return junctions;
 }

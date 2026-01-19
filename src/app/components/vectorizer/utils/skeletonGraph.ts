@@ -41,8 +41,6 @@ export function buildSkeletonGraph(
   height: number,
   distanceMap?: Uint8Array
 ): SkeletonGraph {
-  console.log('📊 Building skeleton graph...');
-  
   // Step 1: Identify nodes (endpoints and junctions)
   const nodes: SkeletonNode[] = [];
   const nodeMap = new Map<number, number>(); // pixel idx -> node id
@@ -72,8 +70,6 @@ export function buildSkeletonGraph(
       }
     }
   }
-  
-  console.log(`  Found ${nodes.filter(n => n.type === 'endpoint').length} endpoints, ${nodes.filter(n => n.type === 'junction').length} junctions`);
   
   // Step 2: Trace edges between nodes
   const edges: SkeletonEdge[] = [];
@@ -126,8 +122,6 @@ export function buildSkeletonGraph(
     }
   }
   
-  console.log(`  Found ${edges.length} edges`);
-  
   return { nodes, edges };
 }
 
@@ -139,8 +133,6 @@ export function pruneSkeletonGraph(
   minSpurLength: number = 15,
   angleThreshold: number = 30 // degrees
 ): SkeletonGraph {
-  console.log(`🌿 Pruning skeleton graph (minLength=${minSpurLength}px)...`);
-  
   const { nodes, edges } = graph;
   const keptEdges = new Set<number>(edges.map(e => e.id));
   let changed = true;
@@ -176,13 +168,10 @@ export function pruneSkeletonGraph(
         if (edge.length < threshold) {
           keptEdges.delete(edgeId);
           changed = true;
-          console.log(`  🌿 Removed spur: edge ${edgeId}, L=${edge.length.toFixed(1)}px < ${threshold.toFixed(1)}px (${alpha}×r̄=${edge.avgWidth.toFixed(1)}px)`);
         }
       }
     }
   }
-  
-  console.log(`🌿 Pruning complete: kept ${keptEdges.size}/${edges.length} edges`);
   
   // Build pruned graph
   const prunedEdges = edges.filter(e => keptEdges.has(e.id));
@@ -362,6 +351,8 @@ function traceEdge(
   nodeMap: Map<number, number>
 ): { pixels: Array<{ x: number; y: number }>; endNodeId?: number } {
   const pixels: Array<{ x: number; y: number }> = [];
+  const visited = new Set<number>(); // 🔥 Track visited pixels to prevent infinite loops
+  
   let x = startX;
   let y = startY;
   let px = prevX;
@@ -369,7 +360,15 @@ function traceEdge(
   
   while (true) {
     const idx = y * width + x;
+    
+    // 🔥 Check if we're in a loop
+    if (visited.has(idx)) {
+      console.warn('⚠️ Edge trace detected loop, stopping');
+      return { pixels };
+    }
+    
     pixels.push({ x, y });
+    visited.add(idx);
     
     // Check if we reached a node
     if (nodeMap.has(idx)) {
@@ -383,13 +382,15 @@ function traceEdge(
     
     for (const n of neighbors) {
       if (n.x === px && n.y === py) continue; // Skip previous
+      const nidx = n.y * width + n.x;
+      if (visited.has(nidx)) continue; // 🔥 Skip already visited pixels
       nextX = n.x;
       nextY = n.y;
       break;
     }
     
     if (nextX < 0) {
-      // Dead end (shouldn't happen if nodes are detected correctly)
+      // Dead end or loop closed
       return { pixels };
     }
     
@@ -399,9 +400,9 @@ function traceEdge(
     x = nextX;
     y = nextY;
     
-    // Safety check
+    // Safety check (should never hit this now)
     if (pixels.length > 10000) {
-      console.warn('Edge trace exceeded 10000 pixels, stopping');
+      console.warn('⚠️ Edge trace exceeded 10000 pixels, stopping');
       return { pixels };
     }
   }

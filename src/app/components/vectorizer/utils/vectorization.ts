@@ -840,8 +840,6 @@ export function pointsToSmoothBezierPath(points: Point[], closed: boolean): stri
     adaptiveSmoothness = 0.38;
   }
   
-  console.log(`🎨 Bezier: ${points.length}pts, curve=${avgCurvature.toFixed(3)}, smooth=${adaptiveSmoothness.toFixed(2)}`);
-  
   // Calculate control points for each segment
   const controlPoints: { cp1: Point; cp2: Point }[] = [];
   
@@ -931,10 +929,7 @@ export async function vectorizeImage(
   try {
     // 🎨 STROKE MODE: HYBRID TRACE (closed shapes + centerlines)
     if (config.mode === 'stroke') {
-      console.log('🎨 Line Mode: HYBRID TRACE (closed shapes + centerlines)...');
-      
       // Step 0: Gaussian blur preprocessing
-      console.log('🎨 Step 0: Gaussian blur preprocessing...');
       const blurred = gaussianBlur(data, width, height, 1.0);
       
       // Convert to binary
@@ -945,9 +940,7 @@ export async function vectorizeImage(
         binary[i] = value < 128 ? 255 : 0;
       }
       
-      console.log('🎨 Step 1: Detecting closed shapes (circles, etc.)...');
       const closedShapes = detectClosedShapes(binary, width, height);
-      console.log(`  Found ${closedShapes.length} closed shapes (circles/ellipses)`);
       
       // Create mask WITHOUT closed shapes for skeletonization
       const binaryForSkeleton = new Uint8Array(binary);
@@ -958,26 +951,18 @@ export async function vectorizeImage(
         }
       }
       
-      console.log('🎨 Step 2: Distance transform...');
       const distanceMap = computeDistanceTransform(binaryForSkeleton, width, height);
       
-      console.log('🎨 Step 3: Skeletonizing (centerlines only)...');
       const skeletonRaw = zhangSuenThinning(binaryForSkeleton, width, height);
       
-      console.log('🎨 Step 3.5: Building skeleton graph...');
       const graph = buildSkeletonGraph(skeletonRaw, width, height, distanceMap);
       
       // ⚠️ DISABLE PRUNING - current algorithm deletes real stroke endpoints!
-      console.log('🎨 Step 3.6: Skipping pruning (preserving all strokes)...');
       const prunedGraph = graph; // No pruning
       
-      console.log('🎨 Step 3.7: Converting back to skeleton...');
       const skeleton = graphToSkeleton(prunedGraph, width, height);
       
-      console.log('🎨 Step 4: Tracing skeleton paths...');
       const skeletonPaths = traceSkeletonPaths(skeleton, width, height);
-      
-      console.log(`🎨 Found ${skeletonPaths.length} centerline paths`);
       
       // Process CLOSED SHAPES - use ELLIPSE FITTING for perfect curves
       for (const shape of closedShapes) {
@@ -1015,8 +1000,6 @@ export async function vectorizeImage(
             strokeWidth,
           });
           
-          console.log(`  ✨ Perfect ellipse: a=${ellipse.a.toFixed(1)}, b=${ellipse.b.toFixed(1)}, stroke: ${strokeWidth}px`);
-          
         } else {
           // FALLBACK: Use contour trace
           if (config.simplify && tolerance > 0) {
@@ -1044,8 +1027,6 @@ export async function vectorizeImage(
             svgPath,
             strokeWidth,
           });
-          
-          console.log(`  Contour shape: ${points.length} pts, stroke: ${strokeWidth}px`);
         }
       }
       
@@ -1068,13 +1049,10 @@ export async function vectorizeImage(
         const smoothedWidths = smoothWidthArray(widths, 5);
         const avgWidth = smoothedWidths.reduce((sum, w) => sum + w, 0) / smoothedWidths.length;
         
-        console.log(`🎨 Centerline path: ${skPath.points.length} original points, avgWidth=${avgWidth.toFixed(1)}px`);
-        
         // Simplify - gentle simplification to preserve details
         let points = skPath.points;
         if (config.simplify && tolerance > 0) {
           points = simplifyPath(points, tolerance * 1.5);
-          console.log(`   → Simplified to ${points.length} points (tolerance=${(tolerance * 1.5).toFixed(2)})`);
         }
         
         // Smooth bezier
@@ -1100,11 +1078,8 @@ export async function vectorizeImage(
           svgPath,
           strokeWidth: finalStrokeWidth,
         });
-        
-        console.log(`   → Final: ${points.length}pts, stroke=${finalStrokeWidth}px`);
       }
       
-      console.log(`🎨 Hybrid Trace complete: ${closedShapes.length} closed + ${skeletonPaths.length} centerlines = ${paths.length} total`);
       return paths;
     }
     
@@ -2010,8 +1985,6 @@ function detectClosedShapes(
             area,
             circularity,
           });
-          
-          console.log(`    Closed shape: area=${area}, circ=${circularity.toFixed(2)}, AR=${aspectRatio.toFixed(1)}`);
         }
       }
     }
