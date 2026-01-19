@@ -6,6 +6,7 @@
 
 ### 核心技術棧
 - **Potrace 演算法**: 主要向量化引擎（高質量貝茲曲線）
+- **Zhang-Suen 演算法**: 骨架提取（Line Mode 線條細化）
 - **K-means 聚類**: 顏色量化與分離
 - **Generator 批處理**: 記憶體優化架構
 - **多層保護機制**: 防止卡死與記憶體溢出
@@ -13,18 +14,37 @@
 ### 工作流程（5步驟）
 ```
 1. Upload      → 上傳圖片
-2. Mode Select → 選擇模式（描邊/填充/混合）
+2. Mode Select → 選擇模式（線條/填充/混合）
 3. Preprocess  → 調整參數（顏色數量、模糊、閾值）
 4. Vectorize   → 生成向量路徑
 5. Export      → 導出 SVG
 ```
 
-### 關鍵創新
-✅ **ColorMap Index Mapping** - 調整參數後顏色不跑位  
-✅ **Generator 批處理** - 記憶體峰值降低 90%（從 500MB → 100MB）  
-✅ **多層保護機制** - 複雜度檢測 + 宽高比檢測 + 超時保護  
-✅ **Mask 顏色反轉** - 修復 Potrace 形狀挖空問題  
-✅ **智能降採樣** - 大區域自動降解析度避免卡死  
+### 向量化模式
+
+#### 🎨 Line Mode（線條模式）
+**用途**: 手繪稿、Logo、文字等單色線稿  
+**技術**: Zhang-Suen 骨架提取 + 路徑追蹤  
+**輸出**: SVG stroke paths（描邊路徑）
+
+**處理流程**:
+```
+二值化圖像 → 骨架提取 → 路徑追蹤 → 簡化 → SVG stroke
+```
+
+**關鍵算法**:
+- **Zhang-Suen Thinning**: 迭代細化粗線條為1像素寬骨架
+- **Path Tracing**: 從端點/分叉點追蹤連續路徑
+- **Douglas-Peucker**: 路徑簡化，減少節點數量
+
+#### 🎨 Fill Mode（填充模式）
+**用途**: 插圖、平面設計等多色填充區域  
+**技術**: Potrace 向量化 + K-means 聚類  
+**輸出**: SVG fill paths（填充路徑）with Bezier curves
+
+#### 🎨 Mixed Mode（混合模式）  
+**用途**: 漫畫、複雜插圖等線條+填充組合  
+**技術**: 根據區域面積自動判斷 stroke/fill
 
 ---
 

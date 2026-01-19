@@ -18,6 +18,7 @@ interface SVGCanvasProps {
   hoveredPathIndex?: number | null;
   hiddenPathIndices?: number[];
   isProcessing?: boolean; // NEW: Loading state for long computations
+  strokeWidthMultiplier?: number; // 🆕 Global stroke width multiplier
 }
 
 // ✨ Exposed ref methods for direct canvas updates
@@ -48,6 +49,7 @@ export const SVGCanvas = forwardRef<SVGCanvasRef, SVGCanvasProps>(({
   hoveredPathIndex = null,
   hiddenPathIndices = [],
   isProcessing = false, // NEW: Loading state for long computations
+  strokeWidthMultiplier = 1, // 🆕 Default multiplier is 1
 }, ref) => {
   const { t } = useLanguage();
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -455,11 +457,13 @@ export const SVGCanvas = forwardRef<SVGCanvasRef, SVGCanvasProps>(({
               {vectorPaths.length > 0 && (
                 <svg
                   ref={svgRef}
-                  width={originalImage.width}
-                  height={originalImage.height}
                   viewBox={`0 0 ${originalImage.width} ${originalImage.height}`}
                   className="absolute top-0 left-0 pointer-events-none"
-                  style={{ zIndex: 10 }}
+                  style={{ 
+                    zIndex: 10,
+                    width: `${originalImage.width}px`,
+                    height: `${originalImage.height}px`,
+                  }}
                 >
                   {vectorPaths.map((path, index) => {
                     const isHidden = hiddenPathIndices.includes(index);
@@ -468,31 +472,63 @@ export const SVGCanvas = forwardRef<SVGCanvasRef, SVGCanvasProps>(({
                     const isSelected = selectedPathIndices.includes(index);
                     const isHovered = hoveredPathIndex === index;
                     
+                    const strokeColor = isSelected ? '#2563eb' : isHovered ? '#f59e0b' : (path.color || '#A89F91');
+                    const baseStrokeWidth = path.strokeWidth || (path.type === 'stroke' ? 2 : 0.5);
+                    const strokeWidth = (isSelected || isHovered ? Math.max(baseStrokeWidth, 3) : baseStrokeWidth) * strokeWidthMultiplier;
+                    const opacity = isSelected ? 1 : isHovered ? 0.9 : 0.8;
+                    const filter = isSelected ? 'drop-shadow(0 0 8px rgba(37, 99, 235, 0.5))' : isHovered ? 'drop-shadow(0 0 6px rgba(245, 158, 11, 0.5))' : undefined;
+                    
+                    // 🆕 Render geometric primitives
+                    if (path.primitive) {
+                      const prim = path.primitive;
+                      
+                      if (prim.type === 'circle') {
+                        return (
+                          <circle
+                            key={index}
+                            cx={prim.cx}
+                            cy={prim.cy}
+                            r={prim.r}
+                            fill="none"
+                            stroke={strokeColor}
+                            strokeWidth={strokeWidth}
+                            strokeLinecap="round"
+                            opacity={opacity}
+                            filter={filter}
+                          />
+                        );
+                      } else if (prim.type === 'ellipse') {
+                        return (
+                          <ellipse
+                            key={index}
+                            cx={prim.cx}
+                            cy={prim.cy}
+                            rx={prim.rx}
+                            ry={prim.ry}
+                            transform={prim.angle ? `rotate(${prim.angle} ${prim.cx} ${prim.cy})` : undefined}
+                            fill="none"
+                            stroke={strokeColor}
+                            strokeWidth={strokeWidth}
+                            strokeLinecap="round"
+                            opacity={opacity}
+                            filter={filter}
+                          />
+                        );
+                      }
+                    }
+                    
+                    // Standard path rendering
                     return (
                       <path
                         key={index}
                         d={path.svgPath || pointsToSVGPath(path.points, path.closed)}
                         fill={path.type === 'fill' ? (path.color || '#E8B4B8') : 'none'}
-                        stroke={
-                          isSelected ? '#2563eb' : // Blue for selected
-                          isHovered ? '#f59e0b' : // Amber for hovered
-                          (path.type === 'stroke' ? (path.color || '#A89F91') : (path.color || '#A89F91'))
-                        }
-                        strokeWidth={
-                          isSelected ? 4 :
-                          isHovered ? 3 :
-                          (path.type === 'stroke' ? 2 : 0.5)
-                        }
-                        opacity={
-                          isSelected ? 1 :
-                          isHovered ? 0.9 :
-                          0.8
-                        }
-                        filter={
-                          isSelected ? 'drop-shadow(0 0 8px rgba(37, 99, 235, 0.5))' :
-                          isHovered ? 'drop-shadow(0 0 6px rgba(245, 158, 11, 0.5))' :
-                          undefined
-                        }
+                        stroke={strokeColor}
+                        strokeWidth={strokeWidth}
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        opacity={opacity}
+                        filter={filter}
                       />
                     );
                   })}

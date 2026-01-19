@@ -22,6 +22,7 @@ export const DEFAULT_VALUES = {
   // Step 4: Vectorization
   PATH_PRECISION: 30,
   SIMPLIFY_PATH: true,
+  STROKE_WIDTH: 3, // 🆕 Default stroke width for line mode
   
   // Display settings
   IMAGE_OPACITY: 0.3,
@@ -34,6 +35,8 @@ export const LIMITS = {
   COLOR_COUNT_MAX: 10,
   BLUR_RADIUS_MAX: 10,
   THRESHOLD_MAX: 255,
+  STROKE_WIDTH_MIN: 1,
+  STROKE_WIDTH_MAX: 20, // 🆕 Stroke width limits
   
   // Image size limits (to prevent memory allocation failures)
   MAX_IMAGE_WIDTH: 2000,

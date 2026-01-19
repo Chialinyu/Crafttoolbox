@@ -3,6 +3,8 @@ import { useLanguage } from '../contexts/LanguageContext';
 import { useViewportHeight } from '../../hooks/useViewportHeight';
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
 import { Button } from './ui/button';
+import { Label } from './ui/label';
+import { Slider } from './ui/slider';
 import { Upload, Check, ChevronRight, Construction, Download, Copy } from 'lucide-react';
 import { toast } from 'sonner';
 import { ToolPageLayout } from './ui/ToolPageLayout';
@@ -111,6 +113,7 @@ export const VectorizerTool: React.FC<VectorizerToolProps> = ({ onBack }) => {
   
   // Step 4: Vectorization
   const [pathPrecision, setPathPrecision] = useState(DEFAULT_VALUES.PATH_PRECISION);
+  const [strokeWidthMultiplier, setStrokeWidthMultiplier] = useState(1.0); // 🆕 Stroke width control
   const [vectorPaths, setVectorPaths] = useState<VectorPath[]>([]);
   const [isVectorizing, setIsVectorizing] = useState(false);
   
@@ -1138,6 +1141,27 @@ export const VectorizerTool: React.FC<VectorizerToolProps> = ({ onBack }) => {
                         }}
                       />
                       
+                      {/* 🆕 Stroke Width Control (Line Mode only) */}
+                      {mode === 'line' && (
+                        <div className="space-y-2 p-3 bg-accent/5 rounded-lg border border-accent/20">
+                          <div className="flex items-center justify-between">
+                            <Label htmlFor="stroke-width-step4" className="text-sm font-medium">{t('strokeWidth')}</Label>
+                            <span className="text-sm text-muted-foreground font-mono">{strokeWidthMultiplier.toFixed(1)}x</span>
+                          </div>
+                          <Slider
+                            id="stroke-width-step4"
+                            min={0.5}
+                            max={3}
+                            step={0.1}
+                            value={[strokeWidthMultiplier]}
+                            onValueChange={(values) => setStrokeWidthMultiplier(values[0])}
+                          />
+                          <p className="text-xs text-muted-foreground">
+                            {t('adjustStrokeWidthDesc')}
+                          </p>
+                        </div>
+                      )}
+                      
                       <div className="flex gap-2 mt-4">
                         {editingStep === 4 && (
                           <Button variant="outline" onClick={handleCancelEdit} className="flex-1">
@@ -1307,6 +1331,7 @@ export const VectorizerTool: React.FC<VectorizerToolProps> = ({ onBack }) => {
             hoveredPathIndex={previewManager.activePreviewSection === 'step4' ? previewManager.step4.hoveredPathIndex : null}
             hiddenPathIndices={hiddenPathIndices}
             isProcessing={isGeneratingModePreview || isGeneratingPreview || isVectorizing}
+            strokeWidthMultiplier={strokeWidthMultiplier}
           />
         </div>
       </div>

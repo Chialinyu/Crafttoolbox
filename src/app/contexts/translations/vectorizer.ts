@@ -50,7 +50,7 @@ export const vectorizerTranslations = {
   // Vectorization
   vectorization: { zh: '向量化', en: 'Vectorization' },
   pathPrecision: { zh: '路徑精度', en: 'Path Precision' },
-  simplifyPath: { zh: '簡��路徑', en: 'Simplify Path' },
+  simplifyPath: { zh: '簡化路徑', en: 'Simplify Path' },
   minArea: { zh: '最小區域', en: 'Minimum Area' },
   generateVectors: { zh: '生成向量', en: 'Generate Vectors' },
   vectorizing: { zh: '向量化中...', en: 'Vectorizing...' },
@@ -59,6 +59,7 @@ export const vectorizerTranslations = {
   // Summary
   imageSize: { zh: '圖片尺寸', en: 'Image Size' },
   pathsGenerated: { zh: '個向量路徑', en: 'vector paths' },
+  strokeWidth: { zh: '線條粗細', en: 'Stroke Width' }, // 🆕
   
   // Node Editor
   nodeEditor: { zh: '節點編輯', en: 'Node Editor' },
@@ -121,6 +122,7 @@ export const vectorizerTranslations = {
   autoThresholdDesc: { zh: '自動計算最佳閾值', en: 'Automatically calculate optimal threshold' },
   separateFgBgDesc: { zh: '分離前景與背景', en: 'Separate foreground from background' },
   colorClustersDesc: { zh: '向量化的顏色分群數量', en: 'Number of color clusters for vectorization' },
+  adjustStrokeWidthDesc: { zh: '調整線條粗細倍率', en: 'Adjust stroke width multiplier' },
   vectorEditInProgress: { zh: '向量節點編輯功能開發中...', en: 'Vector node editing feature in development...' },
   
   // Bezier Curves

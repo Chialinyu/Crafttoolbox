@@ -58,6 +58,9 @@ export const PreprocessPanel: React.FC<PreprocessPanelProps> = ({
   onMergeColors,
   selectedColorIndices,
   onColorSelect,
+  // 🆕 Stroke Width Control (Line Mode only)
+  strokeWidthMultiplier = 1,
+  onStrokeWidthChange,
   // ❌ REMOVED: Props for Bezier Curves - now always uses Potrace fallback strategy
 }) => {
   const { t } = useLanguage();

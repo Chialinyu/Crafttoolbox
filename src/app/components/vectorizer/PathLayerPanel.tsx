@@ -205,14 +205,7 @@ export function PathLayerPanel({
                       >
                         {/* Mini Preview */}
                         <div className="w-10 h-10 border border-border rounded bg-white shrink-0 flex items-center justify-center">
-                          <svg
-                            width="32"
-                            height="32"
-                            viewBox="0 0 100 100"
-                            className="overflow-visible"
-                          >
-                            {renderMiniPath(path)}
-                          </svg>
+                          {renderMiniPath(path)}
                         </div>
 
                         {/* Path Info */}
@@ -282,14 +275,91 @@ export function PathLayerPanel({
 
 // Helper function to render mini path preview
 function renderMiniPath(path: VectorPath): JSX.Element {
-  if (path.points.length === 0 && !path.svgPath) return <></>;
-
-  // 🎯 If we have svgPath, parse it to get bounding box and render scaled version
-  if (path.svgPath && path.points.length === 0) {
-    return renderPathFromSvgString(path);
+  // 🎯 NEW: Handle geometric primitives (circle/ellipse)
+  if (path.primitive) {
+    const prim = path.primitive;
+    
+    if (prim.type === 'circle') {
+      const size = prim.r * 2;
+      const padding = prim.r * 0.3; // 30% padding
+      const viewBox = `${prim.cx - prim.r - padding} ${prim.cy - prim.r - padding} ${size + padding * 2} ${size + padding * 2}`;
+      
+      return (
+        <svg width="100%" height="100%" viewBox={viewBox} preserveAspectRatio="xMidYMid meet">
+          <circle
+            cx={prim.cx}
+            cy={prim.cy}
+            r={prim.r}
+            fill="none"
+            stroke={path.color || '#000000'}
+            strokeWidth={Math.max(1, prim.r * 0.1)}
+            strokeLinecap="round"
+          />
+        </svg>
+      );
+    } else if (prim.type === 'ellipse') {
+      const width = prim.rx * 2;
+      const height = prim.ry * 2;
+      const maxRadius = Math.max(prim.rx, prim.ry);
+      const padding = maxRadius * 0.3; // 30% padding
+      const viewBox = `${prim.cx - prim.rx - padding} ${prim.cy - prim.ry - padding} ${width + padding * 2} ${height + padding * 2}`;
+      
+      return (
+        <svg width="100%" height="100%" viewBox={viewBox} preserveAspectRatio="xMidYMid meet">
+          <ellipse
+            cx={prim.cx}
+            cy={prim.cy}
+            rx={prim.rx}
+            ry={prim.ry}
+            transform={prim.angle ? `rotate(${prim.angle} ${prim.cx} ${prim.cy})` : undefined}
+            fill="none"
+            stroke={path.color || '#000000'}
+            strokeWidth={Math.max(1, maxRadius * 0.1)}
+            strokeLinecap="round"
+          />
+        </svg>
+      );
+    }
   }
+  
+  // 🎯 Handle SVG paths (from Bezier smoothing)
+  if (path.svgPath) {
+    const bounds = parseSvgPathBounds(path.svgPath);
+    
+    if (!bounds) {
+      console.warn('⚠️ Failed to parse SVG path bounds for:', path.svgPath.substring(0, 100));
+      return <></>;
+    }
 
-  // Otherwise use points
+    const { minX, minY, maxX, maxY } = bounds;
+    const width = maxX - minX || 1;
+    const height = maxY - minY || 1;
+    
+    // 🎯 Use actual strokeWidth from path
+    const actualStrokeWidth = path.strokeWidth || 2;
+    
+    // 🎯 Account for stroke width in padding (stroke extends half on each side)
+    const strokePadding = actualStrokeWidth / 2;
+    const basePadding = Math.max(width, height) * 0.15;
+    const totalPadding = basePadding + strokePadding;
+    const viewBox = `${minX - totalPadding} ${minY - totalPadding} ${width + totalPadding * 2} ${height + totalPadding * 2}`;
+
+    return (
+      <svg width="100%" height="100%" viewBox={viewBox} preserveAspectRatio="xMidYMid meet">
+        <path
+          d={path.svgPath}
+          fill={path.type === 'fill' ? path.color : 'none'}
+          stroke={path.type === 'stroke' ? (path.color || '#000000') : (path.type === 'fill' ? path.color : '#000000')}
+          strokeWidth={actualStrokeWidth}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          opacity={0.9}
+        />
+      </svg>
+    );
+  }
+  
+  // 🎯 Fallback: Handle raw points
   if (path.points.length > 0) {
     return renderPathFromPoints(path);
   }
@@ -324,43 +394,6 @@ function parseSvgPathBounds(svgPath: string): { minX: number; minY: number; maxX
   return { minX, minY, maxX, maxY };
 }
 
-// 🆕 Render path from SVG string with proper scaling
-function renderPathFromSvgString(path: VectorPath): JSX.Element {
-  const bounds = parseSvgPathBounds(path.svgPath!);
-  
-  if (!bounds) {
-    console.warn('Failed to parse SVG path bounds');
-    return <></>;
-  }
-
-  const { minX, minY, maxX, maxY } = bounds;
-  const width = maxX - minX || 1;
-  const height = maxY - minY || 1;
-
-  // 🎯 Use dynamic viewBox that matches the path's coordinate space
-  // Add 10% padding
-  const padding = Math.max(width, height) * 0.1;
-  const viewBox = `${minX - padding} ${minY - padding} ${width + padding * 2} ${height + padding * 2}`;
-
-  return (
-    <svg
-      width="100%"
-      height="100%"
-      viewBox={viewBox}
-      preserveAspectRatio="xMidYMid meet"
-      className="overflow-visible"
-    >
-      <path
-        d={path.svgPath}
-        fill={path.type === 'fill' ? path.color : 'none'}
-        stroke={path.type === 'stroke' ? path.color : (path.type === 'fill' ? path.color : path.color)}
-        strokeWidth={Math.max(width, height) * 0.02}
-        opacity={0.9}
-      />
-    </svg>
-  );
-}
-
 function renderPathFromPoints(path: VectorPath): JSX.Element {
   // Calculate bounding box
   let minX = Infinity, minY = Infinity;
@@ -376,35 +409,30 @@ function renderPathFromPoints(path: VectorPath): JSX.Element {
   const width = maxX - minX || 1;
   const height = maxY - minY || 1;
   
-  // 🎯 Scale to fit in 80x80 space with padding
-  const scale = Math.min(80 / width, 80 / height);
+  // 🎯 Create viewBox with padding
+  const padding = Math.max(width, height) * 0.15;
+  const viewBox = `${minX - padding} ${minY - padding} ${width + padding * 2} ${height + padding * 2}`;
 
-  // 🔍 Debug: Log if scale is unusually small or large
-  if (scale < 0.01 || scale > 100) {
-    console.warn(`Unusual scale for path: ${scale}, width: ${width}, height: ${height}`);
-  }
-
-  // Generate path data with scaling
-  const scaledPoints = path.points.map(p => ({
-    x: (p.x - minX) * scale + 10,
-    y: (p.y - minY) * scale + 10,
-  }));
-
-  let pathData = `M ${scaledPoints[0].x.toFixed(2)} ${scaledPoints[0].y.toFixed(2)}`;
-  for (let i = 1; i < scaledPoints.length; i++) {
-    pathData += ` L ${scaledPoints[i].x.toFixed(2)} ${scaledPoints[i].y.toFixed(2)}`;
+  // Generate path data using original coordinates
+  let pathData = `M ${path.points[0].x.toFixed(2)} ${path.points[0].y.toFixed(2)}`;
+  for (let i = 1; i < path.points.length; i++) {
+    pathData += ` L ${path.points[i].x.toFixed(2)} ${path.points[i].y.toFixed(2)}`;
   }
   if (path.closed) {
     pathData += ' Z';
   }
 
   return (
-    <path
-      d={pathData}
-      fill={path.type === 'fill' ? path.color : 'none'}
-      stroke={path.type === 'stroke' ? path.color : (path.type === 'fill' ? path.color : path.color)}
-      strokeWidth={path.type === 'stroke' ? 3 : 1}
-      opacity={0.9}
-    />
+    <svg width="100%" height="100%" viewBox={viewBox} preserveAspectRatio="xMidYMid meet">
+      <path
+        d={pathData}
+        fill={path.type === 'fill' ? path.color : 'none'}
+        stroke={path.type === 'stroke' ? (path.color || '#000000') : (path.type === 'fill' ? (path.color || '#000000') : '#000000')}
+        strokeWidth={path.type === 'stroke' ? Math.max(1, Math.max(width, height) * 0.03) : 1}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        opacity={0.9}
+      />
+    </svg>
   );
 }

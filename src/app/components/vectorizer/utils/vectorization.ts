@@ -46,6 +46,9 @@
  */
 
 import Potrace from 'potrace';
+import { zhangSuenThinning, traceSkeletonPaths, extractContours, smoothContourPoints, computeDistanceTransform, morphologicalClose } from './skeletonization';
+import { fitEllipse, ellipseToSVGPath, detectCircleOrEllipse } from './ellipseFitting';
+import { buildSkeletonGraph, pruneSkeletonGraph, graphToSkeleton } from './skeletonGraph';
 
 // ============================================================================
 // Types
@@ -56,12 +59,33 @@ export interface Point {
   y: number;
 }
 
+// 🆕 Geometric primitives
+export interface CirclePrimitive {
+  type: 'circle';
+  cx: number;
+  cy: number;
+  r: number;
+}
+
+export interface EllipsePrimitive {
+  type: 'ellipse';
+  cx: number;
+  cy: number;
+  rx: number;
+  ry: number;
+  angle?: number; // Rotation in degrees
+}
+
+export type ShapePrimitive = CirclePrimitive | EllipsePrimitive;
+
 export interface VectorPath {
   points: Point[];
   closed: boolean;
   type: 'stroke' | 'fill';
   color?: string;
-  svgPath?: string; // 🆕 NEW: Direct SVG path string with bezier curves
+  svgPath?: string; // Direct SVG path string with bezier curves
+  strokeWidth?: number; // Detected stroke width for line art
+  primitive?: ShapePrimitive; // 🆕 Geometric primitive (circle/ellipse)
 }
 
 export interface VectorizationConfig {
@@ -106,6 +130,64 @@ function maskToImageData(
   }
   
   return imageData;
+}
+
+/**
+ * 🆕 Extract sample points from SVG path string (for reference/display)
+ * This is a simple parser that extracts coordinate pairs
+ */
+function extractPointsFromSVGPath(pathData: string): Array<{ x: number; y: number }> {
+  const points: Array<{ x: number; y: number }> = [];
+  const commands = pathData.match(/[MLHVCSQTAZ][^MLHVCSQTAZ]*/gi);
+  
+  if (!commands) return points;
+  
+  let currentX = 0;
+  let currentY = 0;
+  
+  for (const cmd of commands) {
+    const type = cmd[0].toUpperCase();
+    const coords = cmd.slice(1).trim().split(/[\s,]+/).filter(s => s).map(Number);
+    
+    switch (type) {
+      case 'M': // MoveTo
+      case 'L': // LineTo
+        for (let i = 0; i < coords.length; i += 2) {
+          currentX = coords[i];
+          currentY = coords[i + 1];
+          points.push({ x: currentX, y: currentY });
+        }
+        break;
+      case 'C': // Cubic Bezier
+        for (let i = 0; i < coords.length; i += 6) {
+          currentX = coords[i + 4];
+          currentY = coords[i + 5];
+          points.push({ x: currentX, y: currentY });
+        }
+        break;
+      case 'Q': // Quadratic Bezier
+        for (let i = 0; i < coords.length; i += 4) {
+          currentX = coords[i + 2];
+          currentY = coords[i + 3];
+          points.push({ x: currentX, y: currentY });
+        }
+        break;
+      case 'H': // Horizontal line
+        for (const x of coords) {
+          currentX = x;
+          points.push({ x: currentX, y: currentY });
+        }
+        break;
+      case 'V': // Vertical line
+        for (const y of coords) {
+          currentY = y;
+          points.push({ x: currentX, y: currentY });
+        }
+        break;
+    }
+  }
+  
+  return points;
 }
 
 /**
@@ -711,11 +793,13 @@ export function pointsToSVGPath(points: Point[], closed: boolean): string {
  * 🆕 NEW: Convert array of points to smooth SVG path with bezier curves
  * Uses adaptive curvature analysis to determine optimal smoothness
  */
-function pointsToSmoothBezierPath(points: Point[], closed: boolean): string {
+export function pointsToSmoothBezierPath(points: Point[], closed: boolean): string {
   if (points.length < 3) {
     // Too few points - use straight lines
     return pointsToSVGPath(points, closed);
   }
+  
+  // Note: Simplification is done externally via simplifyPath(), no need to downsample here
   
   // 🎯 Adaptive curvature analysis
   // Measure how much the path curves to determine smoothness factor
@@ -740,21 +824,23 @@ function pointsToSmoothBezierPath(points: Point[], closed: boolean): string {
   
   const avgCurvature = totalCurvature / (points.length - 2);
   
-  // 🎯 Adaptive smoothness based on curvature
+  // 🎯 Balanced smoothness for flowing curves (0.38-0.58)
   let adaptiveSmoothness: number;
   if (avgCurvature < 0.05) {
     // Very smooth curve (e.g., circle) - high smoothness
-    adaptiveSmoothness = 0.24;
+    adaptiveSmoothness = 0.58;
   } else if (avgCurvature < 0.10) {
-    // Moderate curve - medium smoothness
-    adaptiveSmoothness = 0.18;
-  } else if (avgCurvature < 0.13) {
-    // Sharp turns - lower smoothness
-    adaptiveSmoothness = 0.15;
+    // Moderate curve - medium-high smoothness
+    adaptiveSmoothness = 0.50;
+  } else if (avgCurvature < 0.20) {
+    // Sharp turns - medium smoothness
+    adaptiveSmoothness = 0.44;
   } else {
-    // Very sharp turns - minimal smoothness
-    adaptiveSmoothness = 0.13;
+    // Very sharp turns - preserve details
+    adaptiveSmoothness = 0.38;
   }
+  
+  console.log(`🎨 Bezier: ${points.length}pts, curve=${avgCurvature.toFixed(3)}, smooth=${adaptiveSmoothness.toFixed(2)}`);
   
   // Calculate control points for each segment
   const controlPoints: { cp1: Point; cp2: Point }[] = [];
@@ -843,7 +929,186 @@ export async function vectorizeImage(
   const tolerance = Math.max(0.2, (100 - config.precision) / 100);
   
   try {
-    // ✅ Cluster-based vectorization (NEW, preferred method)
+    // 🎨 STROKE MODE: HYBRID TRACE (closed shapes + centerlines)
+    if (config.mode === 'stroke') {
+      console.log('🎨 Line Mode: HYBRID TRACE (closed shapes + centerlines)...');
+      
+      // Step 0: Gaussian blur preprocessing
+      console.log('🎨 Step 0: Gaussian blur preprocessing...');
+      const blurred = gaussianBlur(data, width, height, 1.0);
+      
+      // Convert to binary
+      const binary = new Uint8Array(width * height);
+      for (let i = 0; i < width * height; i++) {
+        const pixelIdx = i * 4;
+        const value = blurred[pixelIdx];
+        binary[i] = value < 128 ? 255 : 0;
+      }
+      
+      console.log('🎨 Step 1: Detecting closed shapes (circles, etc.)...');
+      const closedShapes = detectClosedShapes(binary, width, height);
+      console.log(`  Found ${closedShapes.length} closed shapes (circles/ellipses)`);
+      
+      // Create mask WITHOUT closed shapes for skeletonization
+      const binaryForSkeleton = new Uint8Array(binary);
+      for (const shape of closedShapes) {
+        for (const pixel of shape.pixels) {
+          const idx = pixel.y * width + pixel.x;
+          binaryForSkeleton[idx] = 0; // Remove from skeleton processing
+        }
+      }
+      
+      console.log('🎨 Step 2: Distance transform...');
+      const distanceMap = computeDistanceTransform(binaryForSkeleton, width, height);
+      
+      console.log('🎨 Step 3: Skeletonizing (centerlines only)...');
+      const skeletonRaw = zhangSuenThinning(binaryForSkeleton, width, height);
+      
+      console.log('🎨 Step 3.5: Building skeleton graph...');
+      const graph = buildSkeletonGraph(skeletonRaw, width, height, distanceMap);
+      
+      // ⚠️ DISABLE PRUNING - current algorithm deletes real stroke endpoints!
+      console.log('🎨 Step 3.6: Skipping pruning (preserving all strokes)...');
+      const prunedGraph = graph; // No pruning
+      
+      console.log('🎨 Step 3.7: Converting back to skeleton...');
+      const skeleton = graphToSkeleton(prunedGraph, width, height);
+      
+      console.log('🎨 Step 4: Tracing skeleton paths...');
+      const skeletonPaths = traceSkeletonPaths(skeleton, width, height);
+      
+      console.log(`🎨 Found ${skeletonPaths.length} centerline paths`);
+      
+      // Process CLOSED SHAPES - use ELLIPSE FITTING for perfect curves
+      for (const shape of closedShapes) {
+        if (shape.pixels.length < 5) continue;
+        
+        // Try ellipse fitting first (perfect mathematical curve)
+        const ellipse = fitEllipse(shape.pixels);
+        
+        let svgPath: string | undefined;
+        let points = shape.contour;
+        
+        if (ellipse && ellipse.a > 2 && ellipse.b > 2) {
+          // SUCCESS: Use perfect ellipse with only 4 control points!
+          svgPath = ellipseToSVGPath(ellipse);
+          
+          // For display, just use 4 anchor points
+          const cos = Math.cos(ellipse.angle);
+          const sin = Math.sin(ellipse.angle);
+          points = [
+            { x: ellipse.cx + ellipse.a * cos, y: ellipse.cy + ellipse.a * sin }, // Right
+            { x: ellipse.cx - ellipse.b * sin, y: ellipse.cy + ellipse.b * cos }, // Top
+            { x: ellipse.cx - ellipse.a * cos, y: ellipse.cy - ellipse.a * sin }, // Left
+            { x: ellipse.cx + ellipse.b * sin, y: ellipse.cy - ellipse.b * cos }, // Bottom
+          ];
+          
+          const avgRadius = (ellipse.a + ellipse.b) / 2;
+          const strokeWidth = Math.max(2, Math.round(avgRadius * 0.15));
+          
+          paths.push({
+            points,
+            closed: true,
+            type: 'stroke',
+            color: '#000000',
+            svgPath,
+            strokeWidth,
+          });
+          
+          console.log(`  ✨ Perfect ellipse: a=${ellipse.a.toFixed(1)}, b=${ellipse.b.toFixed(1)}, stroke: ${strokeWidth}px`);
+          
+        } else {
+          // FALLBACK: Use contour trace
+          if (config.simplify && tolerance > 0) {
+            points = simplifyPath(points, tolerance);
+          }
+          
+          if (points.length >= 3) {
+            try {
+              svgPath = pointsToSmoothBezierPath(points, true);
+            } catch (e) {
+              svgPath = pointsToSVGPath(points, true);
+            }
+          } else {
+            svgPath = pointsToSVGPath(points, true);
+          }
+          
+          const avgRadius = Math.sqrt(shape.area / Math.PI);
+          const strokeWidth = Math.max(2, Math.round(avgRadius * 0.15));
+          
+          paths.push({
+            points,
+            closed: true,
+            type: 'stroke',
+            color: '#000000',
+            svgPath,
+            strokeWidth,
+          });
+          
+          console.log(`  Contour shape: ${points.length} pts, stroke: ${strokeWidth}px`);
+        }
+      }
+      
+      // Process CENTERLINES
+      for (const skPath of skeletonPaths) {
+        if (skPath.points.length < 3) continue;
+        
+        // Calculate width for each point
+        const widths: number[] = [];
+        for (const pt of skPath.points) {
+          const idx = Math.round(pt.y) * width + Math.round(pt.x);
+          if (idx >= 0 && idx < distanceMap.length) {
+            widths.push(distanceMap[idx] * 2);
+          } else {
+            widths.push(3);
+          }
+        }
+        
+        // Smooth width
+        const smoothedWidths = smoothWidthArray(widths, 5);
+        const avgWidth = smoothedWidths.reduce((sum, w) => sum + w, 0) / smoothedWidths.length;
+        
+        console.log(`🎨 Centerline path: ${skPath.points.length} original points, avgWidth=${avgWidth.toFixed(1)}px`);
+        
+        // Simplify - gentle simplification to preserve details
+        let points = skPath.points;
+        if (config.simplify && tolerance > 0) {
+          points = simplifyPath(points, tolerance * 1.5);
+          console.log(`   → Simplified to ${points.length} points (tolerance=${(tolerance * 1.5).toFixed(2)})`);
+        }
+        
+        // Smooth bezier
+        let svgPath: string | undefined;
+        if (points.length >= 3) {
+          try {
+            svgPath = pointsToSmoothBezierPath(points, false); // OPEN
+          } catch (e) {
+            svgPath = pointsToSVGPath(points, false);
+          }
+        } else {
+          svgPath = pointsToSVGPath(points, false);
+        }
+        
+        // 🎯 Increased minimum stroke width from 2px to 4px for visible round caps
+        const finalStrokeWidth = Math.max(4, Math.round(avgWidth));
+        
+        paths.push({
+          points,
+          closed: false,
+          type: 'stroke',
+          color: '#000000',
+          svgPath,
+          strokeWidth: finalStrokeWidth,
+        });
+        
+        console.log(`   → Final: ${points.length}pts, stroke=${finalStrokeWidth}px`);
+      }
+      
+      console.log(`🎨 Hybrid Trace complete: ${closedShapes.length} closed + ${skeletonPaths.length} centerlines = ${paths.length} total`);
+      return paths;
+    }
+    
+    // ✅ Cluster-based vectorization (fill mode - original logic)
     if (config.labels && config.clusterCount) {
       // Process each cluster
       for (let clusterId = 0; clusterId < config.clusterCount; clusterId++) {
@@ -1691,10 +1956,373 @@ function calculateArea(points: Point[]): number {
 }
 
 /**
+ * 🆕 Detect closed shapes (circles, ellipses) that should be outlined, not skeletonized
+ */
+interface ClosedShape {
+  pixels: Array<{ x: number; y: number }>;
+  contour: Array<{ x: number; y: number }>;
+  area: number;
+  circularity: number; // 0-1, where 1 = perfect circle
+}
+
+function detectClosedShapes(
+  binary: Uint8Array,
+  width: number,
+  height: number
+): ClosedShape[] {
+  const visited = new Uint8Array(width * height);
+  const shapes: ClosedShape[] = [];
+  
+  // Find connected components
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const idx = y * width + x;
+      
+      if (binary[idx] > 0 && !visited[idx]) {
+        // Found new region - flood fill
+        const region = floodFill(binary, width, height, x, y, visited);
+        
+        if (region.pixels.length < 20) continue; // Too small, ignore
+        
+        // Calculate circularity = 4π * area / perimeter²
+        // Circle = 1.0, square ≈ 0.785, line → 0
+        const area = region.pixels.length;
+        const perimeter = calculatePerimeter(region.pixels, width, height);
+        const circularity = (4 * Math.PI * area) / (perimeter * perimeter);
+        
+        // Is this a closed shape (circle/ellipse)?
+        // Also check aspect ratio to catch ellipses
+        const bounds = getBoundingBox(region.pixels);
+        const aspectRatio = Math.max(bounds.width, bounds.height) / Math.min(bounds.width, bounds.height);
+        
+        // Closed shape criteria:
+        // - High circularity (>0.4) OR
+        // - Reasonable aspect ratio (<3) AND medium circularity (>0.3)
+        const isClosedShape = circularity > 0.4 || (aspectRatio < 3 && circularity > 0.3);
+        
+        if (isClosedShape) {
+          // Extract boundary contour
+          const contour = extractBoundary(region.pixels, width, height, binary);
+          
+          shapes.push({
+            pixels: region.pixels,
+            contour,
+            area,
+            circularity,
+          });
+          
+          console.log(`    Closed shape: area=${area}, circ=${circularity.toFixed(2)}, AR=${aspectRatio.toFixed(1)}`);
+        }
+      }
+    }
+  }
+  
+  return shapes;
+}
+
+/**
+ * Flood fill to find connected component
+ */
+function floodFill(
+  binary: Uint8Array,
+  width: number,
+  height: number,
+  startX: number,
+  startY: number,
+  visited: Uint8Array
+): { pixels: Array<{ x: number; y: number }> } {
+  const pixels: Array<{ x: number; y: number }> = [];
+  const stack: Array<{ x: number; y: number }> = [{ x: startX, y: startY }];
+  
+  while (stack.length > 0) {
+    const { x, y } = stack.pop()!;
+    const idx = y * width + x;
+    
+    if (x < 0 || x >= width || y < 0 || y >= height) continue;
+    if (binary[idx] === 0) continue;
+    if (visited[idx]) continue;
+    
+    visited[idx] = 1;
+    pixels.push({ x, y });
+    
+    // 4-connected neighbors
+    stack.push({ x: x + 1, y });
+    stack.push({ x: x - 1, y });
+    stack.push({ x, y: y + 1 });
+    stack.push({ x, y: y - 1 });
+  }
+  
+  return { pixels };
+}
+
+/**
+ * Calculate perimeter of region (boundary pixel count)
+ */
+function calculatePerimeter(
+  pixels: Array<{ x: number; y: number }>,
+  width: number,
+  height: number
+): number {
+  const pixelSet = new Set(pixels.map(p => p.y * width + p.x));
+  let perimeter = 0;
+  
+  for (const p of pixels) {
+    // Check 4 neighbors
+    const neighbors = [
+      { x: p.x + 1, y: p.y },
+      { x: p.x - 1, y: p.y },
+      { x: p.x, y: p.y + 1 },
+      { x: p.x, y: p.y - 1 },
+    ];
+    
+    for (const n of neighbors) {
+      const nidx = n.y * width + n.x;
+      if (n.x < 0 || n.x >= width || n.y < 0 || n.y >= height || !pixelSet.has(nidx)) {
+        perimeter++; // Edge pixel
+      }
+    }
+  }
+  
+  return perimeter;
+}
+
+/**
+ * Get bounding box of pixel set
+ */
+function getBoundingBox(pixels: Array<{ x: number; y: number }>): {
+  x: number; y: number; width: number; height: number;
+} {
+  let minX = Infinity, minY = Infinity;
+  let maxX = -Infinity, maxY = -Infinity;
+  
+  for (const p of pixels) {
+    minX = Math.min(minX, p.x);
+    minY = Math.min(minY, p.y);
+    maxX = Math.max(maxX, p.x);
+    maxY = Math.max(maxY, p.y);
+  }
+  
+  return {
+    x: minX,
+    y: minY,
+    width: maxX - minX + 1,
+    height: maxY - minY + 1,
+  };
+}
+
+/**
+ * Extract boundary contour from region
+ */
+function extractBoundary(
+  pixels: Array<{ x: number; y: number }>,
+  width: number,
+  height: number,
+  binary: Uint8Array
+): Array<{ x: number; y: number }> {
+  const pixelSet = new Set(pixels.map(p => p.y * width + p.x));
+  const boundary: Array<{ x: number; y: number }> = [];
+  
+  // Find boundary pixels (has at least one background neighbor)
+  for (const p of pixels) {
+    let isBoundary = false;
+    
+    // Check 8-connected neighbors
+    for (let dy = -1; dy <= 1; dy++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        if (dx === 0 && dy === 0) continue;
+        
+        const nx = p.x + dx;
+        const ny = p.y + dy;
+        const nidx = ny * width + nx;
+        
+        if (nx < 0 || nx >= width || ny < 0 || ny >= height || !pixelSet.has(nidx)) {
+          isBoundary = true;
+          break;
+        }
+      }
+      if (isBoundary) break;
+    }
+    
+    if (isBoundary) {
+      boundary.push(p);
+    }
+  }
+  
+  // Order boundary pixels (simple nearest-neighbor)
+  return orderBoundaryPixels(boundary);
+}
+
+/**
+ * Order boundary pixels into continuous path
+ */
+function orderBoundaryPixels(pixels: Array<{ x: number; y: number }>): Array<{ x: number; y: number }> {
+  if (pixels.length === 0) return [];
+  
+  const ordered: Array<{ x: number; y: number }> = [pixels[0]];
+  const remaining = new Set(pixels.slice(1).map((_, i) => i + 1));
+  
+  while (remaining.size > 0 && ordered.length < pixels.length) {
+    const last = ordered[ordered.length - 1];
+    let nearestIdx = -1;
+    let nearestDist = Infinity;
+    
+    for (const idx of remaining) {
+      const dx = pixels[idx].x - last.x;
+      const dy = pixels[idx].y - last.y;
+      const dist = dx * dx + dy * dy; // Squared distance (faster)
+      
+      if (dist < nearestDist) {
+        nearestDist = dist;
+        nearestIdx = idx;
+      }
+    }
+    
+    if (nearestIdx >= 0 && nearestDist <= 4) { // Max 2px distance (squared = 4)
+      ordered.push(pixels[nearestIdx]);
+      remaining.delete(nearestIdx);
+    } else {
+      break; // No more nearby pixels
+    }
+  }
+  
+  return ordered;
+}
+
+/**
+ * 🆕 Gaussian blur for noise reduction (RapidResizer-style preprocessing)
+ */
+export function gaussianBlur(
+  data: Uint8ClampedArray,
+  width: number,
+  height: number,
+  sigma: number = 1.0
+): Uint8ClampedArray {
+  const result = new Uint8ClampedArray(data);
+  
+  // Generate 1D Gaussian kernel
+  const kernelSize = Math.ceil(sigma * 3) * 2 + 1; // 3-sigma rule
+  const kernel: number[] = [];
+  const halfSize = Math.floor(kernelSize / 2);
+  let sum = 0;
+  
+  for (let i = 0; i < kernelSize; i++) {
+    const x = i - halfSize;
+    const val = Math.exp(-(x * x) / (2 * sigma * sigma));
+    kernel.push(val);
+    sum += val;
+  }
+  
+  // Normalize kernel
+  for (let i = 0; i < kernelSize; i++) {
+    kernel[i] /= sum;
+  }
+  
+  // Temporary buffer for horizontal pass
+  const temp = new Uint8ClampedArray(width * height * 4);
+  
+  // Horizontal pass
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      let r = 0, g = 0, b = 0, a = 0;
+      
+      for (let k = 0; k < kernelSize; k++) {
+        const xx = Math.min(Math.max(x + k - halfSize, 0), width - 1);
+        const idx = (y * width + xx) * 4;
+        const weight = kernel[k];
+        
+        r += data[idx] * weight;
+        g += data[idx + 1] * weight;
+        b += data[idx + 2] * weight;
+        a += data[idx + 3] * weight;
+      }
+      
+      const idx = (y * width + x) * 4;
+      temp[idx] = r;
+      temp[idx + 1] = g;
+      temp[idx + 2] = b;
+      temp[idx + 3] = a;
+    }
+  }
+  
+  // Vertical pass
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      let r = 0, g = 0, b = 0, a = 0;
+      
+      for (let k = 0; k < kernelSize; k++) {
+        const yy = Math.min(Math.max(y + k - halfSize, 0), height - 1);
+        const idx = (yy * width + x) * 4;
+        const weight = kernel[k];
+        
+        r += temp[idx] * weight;
+        g += temp[idx + 1] * weight;
+        b += temp[idx + 2] * weight;
+        a += temp[idx + 3] * weight;
+      }
+      
+      const idx = (y * width + x) * 4;
+      result[idx] = Math.round(r);
+      result[idx + 1] = Math.round(g);
+      result[idx + 2] = Math.round(b);
+      result[idx + 3] = Math.round(a);
+    }
+  }
+  
+  return result;
+}
+
+/**
+ * 🆕 Smooth width array using moving average (for natural width transitions)
+ */
+function smoothWidthArray(widths: number[], windowSize: number = 5): number[] {
+  if (widths.length < windowSize) return widths;
+  
+  const smoothed: number[] = [];
+  const halfWindow = Math.floor(windowSize / 2);
+  
+  for (let i = 0; i < widths.length; i++) {
+    let sum = 0;
+    let count = 0;
+    
+    for (let j = -halfWindow; j <= halfWindow; j++) {
+      const idx = i + j;
+      if (idx >= 0 && idx < widths.length) {
+        sum += widths[idx];
+        count++;
+      }
+    }
+    
+    smoothed.push(sum / count);
+  }
+  
+  return smoothed;
+}
+
+/**
  * Simplify path using Douglas-Peucker algorithm
  */
-function simplifyPath(points: Point[], tolerance: number): Point[] {
+export function simplifyPath(points: Point[], tolerance: number): Point[] {
   if (points.length <= 2) return points;
+  
+  // Helper: Calculate perpendicular distance from point to line
+  const perpendicularDistance = (point: Point, lineStart: Point, lineEnd: Point): number => {
+    const dx = lineEnd.x - lineStart.x;
+    const dy = lineEnd.y - lineStart.y;
+    const lengthSq = dx * dx + dy * dy;
+    
+    if (lengthSq === 0) {
+      const pdx = point.x - lineStart.x;
+      const pdy = point.y - lineStart.y;
+      return Math.sqrt(pdx * pdx + pdy * pdy);
+    }
+    
+    const t = Math.max(0, Math.min(1, ((point.x - lineStart.x) * dx + (point.y - lineStart.y) * dy) / lengthSq));
+    const projX = lineStart.x + t * dx;
+    const projY = lineStart.y + t * dy;
+    const pdx = point.x - projX;
+    const pdy = point.y - projY;
+    return Math.sqrt(pdx * pdx + pdy * pdy);
+  };
   
   const douglasPeucker = (pts: Point[], epsilon: number): Point[] => {
     if (pts.length <= 2) return pts;
@@ -1723,31 +2351,6 @@ function simplifyPath(points: Point[], tolerance: number): Point[] {
   return douglasPeucker(points, tolerance);
 }
 
-/**
- * Calculate perpendicular distance from point to line
- */
-function perpendicularDistance(
-  point: Point,
-  lineStart: Point,
-  lineEnd: Point
-): number {
-  const dx = lineEnd.x - lineStart.x;
-  const dy = lineEnd.y - lineStart.y;
-  
-  if (dx === 0 && dy === 0) {
-    return Math.sqrt(
-      (point.x - lineStart.x) ** 2 + (point.y - lineStart.y) ** 2
-    );
-  }
-  
-  const num = Math.abs(
-    dy * point.x - dx * point.y + lineEnd.x * lineStart.y - lineEnd.y * lineStart.x
-  );
-  const den = Math.sqrt(dx * dx + dy * dy);
-  
-  return num / den;
-}
-
 // ============================================================================
 // SVG Generation
 // ============================================================================
@@ -1764,15 +2367,32 @@ export function generateSVG(
   let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">\n`;
   
   for (const path of paths) {
-    const d = path.svgPath || pointsToSVGPath(path.points, path.closed);
-    const fill = path.type === 'fill' ? (path.color || '#000000') : 'none';
     const stroke = path.type === 'stroke' ? (path.color || '#000000') : 'none';
-    const strokeWidth = path.type === 'stroke' ? 2 : 0;
+    const strokeWidth = path.type === 'stroke' ? (path.strokeWidth || 2) : 0;
     
-    // 🔧 CRITICAL FIX: Add fill-rule="nonzero" to prevent evenodd punch-out effect
-    // - evenodd: overlapping paths create holes (default SVG behavior)
-    // - nonzero: all paths are filled solidly (what we want!)
-    svg += `  <path d="${d}" fill="${fill}" stroke="${stroke}" stroke-width="${strokeWidth}" fill-rule="nonzero" />\n`;
+    // 🆕 Render geometric primitives
+    if (path.primitive) {
+      const prim = path.primitive;
+      
+      if (prim.type === 'circle') {
+        svg += `  <circle cx="${prim.cx}" cy="${prim.cy}" r="${prim.r}" fill="none" stroke="${stroke}" stroke-width="${strokeWidth}" stroke-linecap="round" stroke-linejoin="round" />\n`;
+      } else if (prim.type === 'ellipse') {
+        const transform = prim.angle ? ` transform="rotate(${prim.angle} ${prim.cx} ${prim.cy})"` : '';
+        svg += `  <ellipse cx="${prim.cx}" cy="${prim.cy}" rx="${prim.rx}" ry="${prim.ry}"${transform} fill="none" stroke="${stroke}" stroke-width="${strokeWidth}" stroke-linecap="round" stroke-linejoin="round" />\n`;
+      }
+    } else {
+      // Standard path rendering
+      const d = path.svgPath || pointsToSVGPath(path.points, path.closed);
+      const fill = path.type === 'fill' ? (path.color || '#000000') : 'none';
+      
+      // 🎨 RapidResizer-style: Round caps and joins for smooth centerlines
+      if (path.type === 'stroke') {
+        svg += `  <path d="${d}" fill="none" stroke="${stroke}" stroke-width="${strokeWidth}" stroke-linecap="round" stroke-linejoin="round" />\n`;
+      } else {
+        // Fill mode: use fill-rule="nonzero" to prevent punch-out
+        svg += `  <path d="${d}" fill="${fill}" stroke="none" fill-rule="nonzero" />\n`;
+      }
+    }
   }
   
   svg += '</svg>';
