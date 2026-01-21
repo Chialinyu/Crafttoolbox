@@ -514,6 +514,41 @@ export const SVGCanvas = forwardRef<SVGCanvasRef, SVGCanvasProps>(({
                             filter={filter}
                           />
                         );
+                      } else if (prim.type === 'rectangle') {
+                        const x = prim.cx - prim.width / 2;
+                        const y = prim.cy - prim.height / 2;
+                        return (
+                          <rect
+                            key={index}
+                            x={x}
+                            y={y}
+                            width={prim.width}
+                            height={prim.height}
+                            transform={prim.angle ? `rotate(${prim.angle} ${prim.cx} ${prim.cy})` : undefined}
+                            fill="none"
+                            stroke={strokeColor}
+                            strokeWidth={strokeWidth}
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            opacity={opacity}
+                            filter={filter}
+                          />
+                        );
+                      } else if (prim.type === 'polygon') {
+                        const points = prim.points.map(p => `${p.x},${p.y}`).join(' ');
+                        return (
+                          <polygon
+                            key={index}
+                            points={points}
+                            fill="none"
+                            stroke={strokeColor}
+                            strokeWidth={strokeWidth}
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            opacity={opacity}
+                            filter={filter}
+                          />
+                        );
                       }
                     }
                     

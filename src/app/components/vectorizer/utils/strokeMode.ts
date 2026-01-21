@@ -13,6 +13,7 @@
 import type { VectorPath, Point } from './vectorization';
 import { gaussianBlur, simplifyPath, pointsToSmoothBezierPath, pointsToSVGPath } from './vectorization';
 import { detectCircleOrEllipse } from './ellipseFitting';
+import { detectRectangle, detectTriangle } from './rectangleFitting';
 import { buildSkeletonGraph, pruneSkeletonGraph, graphToSkeleton } from './skeletonGraph';
 import { zhangSuenThinning, traceSkeletonPaths, computeDistanceTransform } from './skeletonization';
 
@@ -51,19 +52,63 @@ export async function processStrokeMode(
   for (const shape of closedShapes) {
     if (shape.pixels.length < 5) continue;
     
-    // Detect circle or ellipse primitive
-    const primitive = detectCircleOrEllipse(shape.pixels);
+    // Try different primitive detectors in order of priority
+    let primitive = null;
+    let strokeWidth = 2;
     
+    // 1. Try circle/ellipse first (most common)
+    primitive = detectCircleOrEllipse(shape.pixels);
     if (primitive) {
-      // Calculate stroke width from shape size
       const avgRadius = primitive.type === 'circle' 
         ? primitive.r 
         : (primitive.rx + primitive.ry) / 2;
-      const strokeWidth = Math.max(2, Math.round(avgRadius * 0.15));
+      strokeWidth = Math.max(2, Math.round(avgRadius * 0.15));
+    }
+    
+    // 2. Try rectangle/square
+    if (!primitive) {
+      primitive = detectRectangle(shape.pixels);
+      if (primitive) {
+        const avgSize = (primitive.width + primitive.height) / 2;
+        strokeWidth = Math.max(2, Math.round(avgSize * 0.08));
+      }
+    }
+    
+    // 3. Try triangle
+    if (!primitive) {
+      primitive = detectTriangle(shape.pixels);
+      if (primitive) {
+        // Calculate average edge length
+        const points = primitive.points;
+        let totalLength = 0;
+        for (let i = 0; i < points.length; i++) {
+          const p1 = points[i];
+          const p2 = points[(i + 1) % points.length];
+          totalLength += Math.sqrt((p2.x - p1.x) ** 2 + (p2.y - p1.y) ** 2);
+        }
+        const avgEdgeLength = totalLength / points.length;
+        strokeWidth = Math.max(2, Math.round(avgEdgeLength * 0.06));
+      }
+    }
+    
+    if (primitive) {
+      // Get center point for reference
+      let cx = 0, cy = 0;
+      if ('cx' in primitive && 'cy' in primitive) {
+        cx = primitive.cx;
+        cy = primitive.cy;
+      } else if ('points' in primitive) {
+        for (const p of primitive.points) {
+          cx += p.x;
+          cy += p.y;
+        }
+        cx /= primitive.points.length;
+        cy /= primitive.points.length;
+      }
       
       // Create vector path with primitive
       paths.push({
-        points: [{ x: primitive.cx, y: primitive.cy }], // Just center for reference
+        points: [{ x: cx, y: cy }], // Just center for reference
         closed: true,
         type: 'stroke',
         color: '#000000',

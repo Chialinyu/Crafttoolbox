@@ -76,7 +76,22 @@ export interface EllipsePrimitive {
   angle?: number; // Rotation in degrees
 }
 
-export type ShapePrimitive = CirclePrimitive | EllipsePrimitive;
+export interface RectanglePrimitive {
+  type: 'rectangle';
+  cx: number;
+  cy: number;
+  width: number;
+  height: number;
+  angle?: number; // Rotation in degrees
+}
+
+export interface PolygonPrimitive {
+  type: 'polygon';
+  points: Array<{ x: number; y: number }>;
+  sides: number; // 3 for triangle, etc.
+}
+
+export type ShapePrimitive = CirclePrimitive | EllipsePrimitive | RectanglePrimitive | PolygonPrimitive;
 
 export interface VectorPath {
   points: Point[];
@@ -2580,6 +2595,14 @@ export function generateSVG(
       } else if (prim.type === 'ellipse') {
         const transform = prim.angle ? ` transform="rotate(${prim.angle} ${prim.cx} ${prim.cy})"` : '';
         svg += `  <ellipse cx="${prim.cx}" cy="${prim.cy}" rx="${prim.rx}" ry="${prim.ry}"${transform} fill="none" stroke="${stroke}" stroke-width="${strokeWidth}" stroke-linecap="round" stroke-linejoin="round" />\n`;
+      } else if (prim.type === 'rectangle') {
+        const x = prim.cx - prim.width / 2;
+        const y = prim.cy - prim.height / 2;
+        const transform = prim.angle ? ` transform="rotate(${prim.angle} ${prim.cx} ${prim.cy})"` : '';
+        svg += `  <rect x="${x}" y="${y}" width="${prim.width}" height="${prim.height}"${transform} fill="none" stroke="${stroke}" stroke-width="${strokeWidth}" stroke-linecap="round" stroke-linejoin="round" />\n`;
+      } else if (prim.type === 'polygon') {
+        const points = prim.points.map(p => `${p.x},${p.y}`).join(' ');
+        svg += `  <polygon points="${points}" fill="none" stroke="${stroke}" stroke-width="${strokeWidth}" stroke-linecap="round" stroke-linejoin="round" />\n`;
       }
     } else {
       // Standard path rendering

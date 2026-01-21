@@ -275,7 +275,7 @@ export function PathLayerPanel({
 
 // Helper function to render mini path preview
 function renderMiniPath(path: VectorPath): JSX.Element {
-  // 🎯 NEW: Handle geometric primitives (circle/ellipse)
+  // 🎯 NEW: Handle geometric primitives (circle/ellipse/rectangle/polygon)
   if (path.primitive) {
     const prim = path.primitive;
     
@@ -316,6 +316,57 @@ function renderMiniPath(path: VectorPath): JSX.Element {
             stroke={path.color || '#000000'}
             strokeWidth={Math.max(1, maxRadius * 0.1)}
             strokeLinecap="round"
+          />
+        </svg>
+      );
+    } else if (prim.type === 'rectangle') {
+      const x = prim.cx - prim.width / 2;
+      const y = prim.cy - prim.height / 2;
+      const maxSize = Math.max(prim.width, prim.height);
+      const padding = maxSize * 0.15; // 15% padding
+      const viewBox = `${x - padding} ${y - padding} ${prim.width + padding * 2} ${prim.height + padding * 2}`;
+      
+      return (
+        <svg width="100%" height="100%" viewBox={viewBox} preserveAspectRatio="xMidYMid meet">
+          <rect
+            x={x}
+            y={y}
+            width={prim.width}
+            height={prim.height}
+            transform={prim.angle ? `rotate(${prim.angle} ${prim.cx} ${prim.cy})` : undefined}
+            fill="none"
+            stroke={path.color || '#000000'}
+            strokeWidth={Math.max(1, maxSize * 0.05)}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      );
+    } else if (prim.type === 'polygon') {
+      // Calculate bounding box
+      let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+      for (const p of prim.points) {
+        minX = Math.min(minX, p.x);
+        maxX = Math.max(maxX, p.x);
+        minY = Math.min(minY, p.y);
+        maxY = Math.max(maxY, p.y);
+      }
+      const width = maxX - minX;
+      const height = maxY - minY;
+      const maxSize = Math.max(width, height);
+      const padding = maxSize * 0.15;
+      const viewBox = `${minX - padding} ${minY - padding} ${width + padding * 2} ${height + padding * 2}`;
+      const points = prim.points.map(p => `${p.x},${p.y}`).join(' ');
+      
+      return (
+        <svg width="100%" height="100%" viewBox={viewBox} preserveAspectRatio="xMidYMid meet">
+          <polygon
+            points={points}
+            fill="none"
+            stroke={path.color || '#000000'}
+            strokeWidth={Math.max(1, maxSize * 0.05)}
+            strokeLinecap="round"
+            strokeLinejoin="round"
           />
         </svg>
       );

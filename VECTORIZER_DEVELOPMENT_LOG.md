@@ -6,6 +6,10 @@
 
 ## 📋 目錄
 
+### 技術特性
+- [技術特性 #1: Line Mode 骨架提取與圖基礎向量化](#技術特性-1-line-mode-骨架提取與圖基礎向量化) 🆕
+
+### 問題與改革
 - [問題 #1: PNG 圖片在第二步卡住](#問題-1-png-圖片在第二步卡住)
 - [問題 #2: Potrace Mask 顏色反轉 - 形狀挖空問題](#問題-2-potrace-mask-顏色反轉---形狀挖空問題)
 - [問題 #3: useBezierCurves 開關硬編碼問題](#問題-3-usebeziercurves-開關硬編碼問題)
@@ -16,7 +20,7 @@
 - [問題 #6: Step 2 預計算期間切換模式導致無限循環](#問題-6-step-2-預計算期間切換模式導致無限循環)
 - [問題 #6.1: Cleanup 未重置預計算標誌](#問題-61-cleanup-未重置預計算標誌)
 - [問題 #7: 記憶體洩漏 - 緩存未清理和預計算循環重疊](#問題-7-記憶體洩漏---緩存未清理和預計算循環重疊)
-- [問題 #8: Potrace Aspect Ratio 邊界條件錯誤](#問題-8-potrace-aspect-ratio-邊界條件錯誤) 🆕
+- [問題 #8: Potrace Aspect Ratio 邊界條件錯誤](#問題-8-potrace-aspect-ratio-邊界條件錯誤)
 
 ---
 
@@ -1410,7 +1414,7 @@ if (complexity > 20) {
 // Layer 3: 寬高比檢測 (Potrace 內部)
 const aspectRatio = Math.max(bbox.width, bbox.height) / Math.min(bbox.width, bbox.height);
 if (aspectRatio > 20 || aspectRatio < 0.05) {
-  // 跳過極端寬高比的區域
+  // 跳過極端���高比的區域
 }
 
 // Layer 4: 超時保護 (Potrace)
@@ -1799,7 +1803,358 @@ if (aspectRatio >= 20 || aspectRatio <= 0.05) {
 
 ---
 
+## 技術特性 #1: Line Mode 骨架提取與圖基礎向量化 🆕
+
+### 🎯 核心技術
+
+**時間**: 2026-01-21
+
+**目的**: 將手繪線稿/Logo 轉換為真正的 SVG stroke paths (描邊路徑) 而非 fill paths (填充輪廓)
+
+**核心挑戰**:
+```
+傳統向量化：粗線條 → 填充輪廓 (fill path with outline)
+   問題：線條被當作實心形狀，無法調整描邊寬度
+
+Line Mode：粗線條 → 中心線 + 寬度 (stroke path with width)
+   優勢：真正的線條，可調整 stroke-width
+```
+
+### 🏗️ 處理流程
+
+```
+Input: 手繪線稿圖片
+  ↓
+【Step 1】預處理 - 高斯模糊 (σ=1.0) + 二值化 (threshold=128)
+  ↓
+【Step 2】幾何圖元檢測 - 圓形/橢圓擬合 (Least-squares)
+  ↓
+【Step 3】骨架化 - Zhang-Suen Thinning (迭代細化至 1px)
+  ↓
+【Step 4】距離變換 - 計算每個骨架點到邊緣的距離
+  ↓
+【Step 5】構建骨架圖 - 節點 (端點/交叉點) + 邊 (路徑)
+  ↓
+【Step 6】修剪短分支 - 動態閾值 (0.3% × diagonal)
+  ↓
+【Step 7】追蹤中心線 - 貝茲曲線平滑 + 寬度檢測
+  ↓
+Output: SVG stroke paths with variable width
+```
+
+### 🔬 核心算法
+
+#### 1. Zhang-Suen 骨架提取
+
+**位置**: `skeletonization.ts`
+
+**原理**: 迭代細化算法，每次迭代移除邊界像素但保留拓撲
+
+**判斷條件**:
+```typescript
+// P9 P2 P3
+// P8 P1 P4
+// P7 P6 P5
+
+條件：
+1. 2 <= B(P1) <= 6    // 鄰域黑點數量 (避免端點/孤立點)
+2. A(P1) == 1          // 連通性 (0→1 轉換次數 = 1)
+3. 方向條件            // 北/東/南/西特定組合
+```
+
+**優點**: ✅ 保證 1 像素寬 ✅ 保留拓撲 ✅ 保留端點/交叉點
+
+#### 2. 骨架圖構建
+
+**位置**: `skeletonGraph.ts`
+
+**節點分類**:
+```typescript
+neighborCount == 1  → endpoint (端點)
+neighborCount >= 3  → junction (交叉點)
+neighborCount == 2  → normal (普通點)
+```
+
+**邊構建**: 從端點/交叉點追蹤到下一個端點/交叉點
+
+#### 3. 短分支修剪
+
+**動態閾值計算**:
+```typescript
+const imageDiagonal = √(width² + height²);
+const minSpurLength = max(2, round(diagonal × 0.003));
+
+例如：
+100×100 圖片   → diagonal=141  → threshold=0.4px
+1024×768 圖片  → diagonal=1280 → threshold=3.8px
+2000×2000 圖片 → diagonal=2828 → threshold=8.5px
+```
+
+**為什麼動態**: 自適應不同圖片尺寸，避免固定閾值對小圖過度修剪或對大圖修剪不足
+
+#### 4. 距離變換與寬度檢測
+
+**位置**: `skeletonization.ts`
+
+**演算法**: Two-pass distance transform (Chamfer distance)
+```typescript
+// Pass 1: 前向掃描 (左上 → 右下)
+dist[x,y] = min(dist[x,y], dist[neighbors] + weight)
+
+// Pass 2: 後向掃描 (右下 → 左上)
+dist[x,y] = min(dist[x,y], dist[neighbors] + weight)
+```
+
+**寬度計算**:
+```typescript
+strokeWidth = 2 × distanceMap[point]  // 直徑 = 2 × 半徑
+```
+
+**寬度平滑**: 移動平均濾波器，避免鋸齒狀寬度變化
+
+#### 5. 幾何圖元檢測
+
+**位置**: `ellipseFitting.ts` + `rectangleFitting.ts`
+
+**支援的圖元**:
+```
+1. 圓形 (Circle)     - <circle>
+2. 橢圓 (Ellipse)    - <ellipse>
+3. 矩形 (Rectangle)  - <rect>
+4. 三角形 (Triangle) - <polygon>
+```
+
+**檢測流程** (優先順序):
+```typescript
+// 1. 圓形/橢圓檢測 (最常見)
+1. 計算質心 (cx, cy)
+2. 計算平均半徑 r = mean(distance to center)
+3. 計算擬合誤差 fitError = stddev(|distance - r|)
+4. 判斷: fitError < 0.15 × r → 圓形
+5. 判斷: aspectRatio < 1.15 → 圓形，否則橢圓
+
+// 2. 矩形/正方形檢測
+1. 提取輪廓邊界像素
+2. Douglas-Peucker 簡化 → 檢測角點
+3. 判斷: 4個角點 + 角度≈90° → 矩形
+4. 計算旋轉角度和尺寸
+
+// 3. 三角形檢測
+1. Douglas-Peucker 簡化
+2. 判斷: 3個角點 → 三角形
+```
+
+**矩形檢測算法** (`rectangleFitting.ts`):
+```typescript
+// Douglas-Peucker 線段簡化
+function douglasPeucker(points, epsilon) {
+  // 遞迴簡化，保留關鍵角點
+  // epsilon = √(pixelCount) × 0.5 (自適應閾值)
+}
+
+// 角度驗證
+angles = calculateCornerAngles(corners);
+if (all angles ≈ 90° ± 15°) → Rectangle
+```
+
+**為什麼檢測幾何圖元**:
+- ✅ 用原生 SVG 圖元 (`<circle>`, `<rect>`) 比路徑更精確
+- ✅ 避免骨架化失真
+- ✅ SVG 渲染更高效
+- ✅ 文件大小更小 (一行 SVG vs 複雜 path)
+
+**描邊寬度計算**:
+```typescript
+Circle:    strokeWidth = r × 0.15
+Rectangle: strokeWidth = avgSize × 0.08
+Triangle:  strokeWidth = avgEdgeLength × 0.06
+```
+
+### 🎯 複雜度判定系統
+
+#### 1. 圖片複雜度分析
+
+**位置**: `VectorizerTool.tsx` - Step 2 預計算
+
+**指標計算**:
+```typescript
+1. edgeDensity = countEdgePixels(edges) / totalPixels
+   - Sobel 邊緣檢測
+   - 邊緣像素佔比 (0-1)
+
+2. colorVariance = calculateColorVariance(imageData)
+   - 顏色標準差
+   - 顏色複雜度 (0-1)
+
+3. complexity = edgeDensity × 0.6 + colorVariance × 0.4
+   - 綜合評分
+
+分類：
+  complexity < 0.3 → Simple  (detail=40)
+  complexity < 0.6 → Medium  (detail=60)
+  complexity ≥ 0.6 → Complex (detail=80)
+```
+
+**自動設定**: 靜默設定 detail level，不彈出 toast 通知
+
+#### 2. Region 複雜度判定
+
+**位置**: `vectorization.ts`
+
+**公式**:
+```typescript
+complexity = perimeter² / (4π × area)
+
+理論值：
+- 圓形: 1.0 (最簡單)
+- 正方形: 1.27
+- 複雜紋理: > 20
+
+應用：
+if (complexity > 20) {
+  跳過 Potrace (太複雜)
+  → 使用 Fallback (更快但質量稍低)
+}
+```
+
+#### 3. Mixed Mode 區域分類
+
+**位置**: `regionClassifier.ts`
+
+**特徵計算**:
+```typescript
+1. aspectRatio = max(width, height) / min(width, height)
+   - 長寬比，衡量細長程度
+
+2. skeletonDensity = 1 / avgThickness
+   - 骨架密度，衡量線條佔比
+
+3. perimeterAreaRatio = perimeter / area
+   - 周長-面積比，衡量形狀複雜度
+```
+
+**分類邏輯**:
+```typescript
+isLine = 
+  aspectRatio > 3 ||          // 細長形狀 (如 1×10 線條)
+  skeletonDensity > 0.8 ||    // 骨架佔比高
+  perimeterAreaRatio > 0.5;   // 周長大
+
+if (isLine) {
+  type = 'stroke';           // → Line Mode 處理
+  strokeWidth = avgThickness × 2;
+} else {
+  type = 'fill';             // → Fill Mode 處理
+}
+```
+
+### 📊 性能優化策略
+
+#### 1. K-means 聚類優化
+
+**位置**: `cvProcessing.ts`
+
+**優化技術**:
+```typescript
+1. 降採樣初始化
+   - 採樣 10% 像素 (scale=0.1)
+   - 速度提升 10×
+
+2. K-means++ 初始化
+   - 智能選擇初始質心
+   - 更快收斂，更好結果
+
+3. 減少迭代次數
+   - 20 → 8 次迭代
+   - 質量影響極小
+
+4. 早停機制
+   - centroidChange < 0.01 → break
+   - 提前終止收斂
+
+5. 透明像素特殊處理
+   - labels[transparent] = 255
+   - 不參與聚類，避免干擾
+```
+
+**效果**: K-means 速度提升約 **15× 倍**
+
+#### 2. Generator 批處理架構
+
+**位置**: `vectorization.ts`
+
+**記憶體優化**:
+```typescript
+// ❌ 舊方式：預先找出所有 regions
+const regions = findAllRegions(mask);  // 500 regions × 1MB = 500MB
+for (const region of regions) {
+  await processRegion(region);
+}
+
+// ✅ 新方式：Generator 逐個生成
+function* generateRegionBatches(mask, batchSize=1) {
+  while (hasMore) {
+    yield findNextRegion();  // 只占用 1MB
+  }
+}
+
+for (const batch of generateRegionBatches(mask)) {
+  await processRegion(batch[0]);
+  // 上一個 region 已被 GC 回收
+}
+```
+
+**效果**: 記憶體使用 **500MB → 100MB** (5× 改善)
+
+### 🎓 技術決策
+
+#### 為什麼選擇 Zhang-Suen？
+
+**對比**:
+```
+Morphological Thinning:
+  - 基於形態學腐蝕
+  - ❌ 可能斷開連接
+  - ❌ 不保證 1 像素寬
+
+Zhang-Suen:
+  - ✅ 保證 1 像素寬
+  - ✅ 拓撲保持
+  - ✅ 保留端點/交叉點
+```
+
+#### 為什麼需要骨架圖？
+
+**直接追蹤問題**:
+```
+X 交叉點處理困難
+  /\
+ /  \
+/____\
+```
+
+**骨架圖優勢**:
+- ✅ 明確的節點 (端點/交叉點) 和邊 (路徑)
+- ✅ 可處理複雜拓撲 (Y 形、X 形、環形)
+- ✅ 支持智能分支修剪
+
+#### 為什麼動態閾值？
+
+**固定閾值問題**:
+```
+threshold = 5px:
+  - 小圖 (100×100) → 5% 被移除 ❌ 過度修剪
+  - 大圖 (2000×2000) → 0.25% 被移除 ✅ 合理
+
+動態閾值 (0.3% diagonal):
+  - 小圖 → 0.4px ✅ 合理
+  - 大圖 → 8.5px ✅ 合理
+  - ✅ 自適應各種尺寸
+```
+
 ---
 
-**最後更新**: 2026-01-14  
+---
+
+**最後更新**: 2026-01-21  
 **維護者**: 確保所有新問題都記錄在此文檔中,包含問題描述、根源分析、解決方案和驗證結果。
