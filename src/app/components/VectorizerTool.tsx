@@ -13,7 +13,7 @@ import { ModeSelector } from './vectorizer/ModeSelector';
 import { PreprocessPanel } from './vectorizer/PreprocessPanel';
 import { SVGCanvas, type SVGCanvasRef } from './vectorizer/SVGCanvas';
 import { PathLayerPanel } from './vectorizer/PathLayerPanel';
-import { preprocessImage, calculateOptimalThreshold, type PreprocessResult } from './vectorizer/utils/cvProcessing';
+import { preprocessImage, calculateOptimalThreshold, calculateSuggestedDetailLevel, type PreprocessResult } from './vectorizer/utils/cvProcessing';
 import { vectorizeImage, generateSVG } from './vectorizer/utils/vectorization';
 import { DEFAULT_VALUES, LIMITS } from './vectorizer/constants';
 import { usePreviewManager } from './vectorizer/hooks/usePreviewManager';
@@ -39,7 +39,7 @@ interface VectorizerToolProps {
 }
 
 export const VectorizerTool: React.FC<VectorizerToolProps> = ({ onBack }) => {
-  const { t } = useLanguage();
+  const { t, language } = useLanguage();
   const { viewportHeight, stickyTop } = useViewportHeight();
   
   // Preview manager hook - handles Step 3 and Step 4 preview mutual exclusion
@@ -114,6 +114,7 @@ export const VectorizerTool: React.FC<VectorizerToolProps> = ({ onBack }) => {
   // Step 4: Vectorization
   const [pathPrecision, setPathPrecision] = useState(DEFAULT_VALUES.PATH_PRECISION);
   const [strokeWidthMultiplier, setStrokeWidthMultiplier] = useState(1.0); // 🆕 Stroke width control
+  const [detailLevel, setDetailLevel] = useState(DEFAULT_VALUES.DETAIL_LEVEL); // 🆕 Detail preservation level
   const [vectorPaths, setVectorPaths] = useState<VectorPath[]>([]);
   const [isVectorizing, setIsVectorizing] = useState(false);
   
@@ -124,6 +125,9 @@ export const VectorizerTool: React.FC<VectorizerToolProps> = ({ onBack }) => {
   const [selectedPathIndices, setSelectedPathIndices] = useState<number[]>([]);
   const [hoveredPathIndex, setHoveredPathIndex] = useState<number | null>(null);
   const [hiddenPathIndices, setHiddenPathIndices] = useState<number[]>([]);
+  
+  // Timer refs
+  const detailLevelTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   // Display settings
   const [showOriginalImage, setShowOriginalImage] = useState(true);
@@ -190,6 +194,8 @@ export const VectorizerTool: React.FC<VectorizerToolProps> = ({ onBack }) => {
     setTempColorCount(DEFAULT_VALUES.COLOR_COUNT);
     setPathPrecision(DEFAULT_VALUES.PATH_PRECISION);
     setSimplifyPath(true);
+    setDetailLevel(DEFAULT_VALUES.DETAIL_LEVEL); // 🆕 Reset detail level
+    setStrokeWidthMultiplier(1.0); // 🆕 Reset stroke width multiplier
     
     // ⚡ Show loading IMMEDIATELY before calculating
     setIsGeneratingModePreview(true);
@@ -200,9 +206,13 @@ export const VectorizerTool: React.FC<VectorizerToolProps> = ({ onBack }) => {
     setAutoThresholdValue(autoThresh);
     setTempThreshold(autoThresh);
     
+    // 🆕 Calculate suggested detail level based on image complexity
+    const suggestedDetail = calculateSuggestedDetailLevel(imageData);
+    setDetailLevel(suggestedDetail);
+    
     // Move to step 2 (this will trigger the precomputation useEffect)
     setCurrentStep(2);
-  }, [previewManager]);
+  }, [previewManager, language]);
 
   // ======================================================================
   // Step 2: Select Mode
@@ -629,6 +639,7 @@ export const VectorizerTool: React.FC<VectorizerToolProps> = ({ onBack }) => {
             precision: pathPrecision,
             minArea: tempMinArea,
             simplify: simplifyPath,
+            detailLevel, // 🆕 Detail preservation level
             // ❌ REMOVED: useBezierCurves, now always uses Potrace fallback strategy
             isCancelledRef, // ✅ Pass cancellation ref
             labels: processedLabels || undefined, // 🎯 Pass cluster labels
@@ -699,6 +710,7 @@ export const VectorizerTool: React.FC<VectorizerToolProps> = ({ onBack }) => {
         precision: pathPrecision,
         minArea,
         simplify: simplifyPath,
+        detailLevel, // 🆕 Detail preservation level
         // ❌ REMOVED: useBezierCurves, now always uses Potrace fallback strategy
         labels: clusterLabels || undefined, // 🎯 Pass cluster labels FROM STATE
         clusterCount: clusterCount || undefined, // 🎯 Pass cluster count FROM STATE
@@ -712,6 +724,50 @@ export const VectorizerTool: React.FC<VectorizerToolProps> = ({ onBack }) => {
       setCurrentStep(5);
     }, 100);
   }, [previewImageData, mode, pathPrecision, minArea, simplifyPath, clusterLabels, clusterCount, clusterToMorandiMap]);
+
+  // 🆕 Re-vectorize when detail level changes in Step 4
+  useEffect(() => {
+    // Only re-vectorize if we're viewing/editing Step 4 and have processed data
+    const isViewingStep4 = currentStep === 4 || editingStep === 4;
+    const imageData = previewImageData || processedImageData; // Use previewImageData if available, otherwise processedImageData
+    if (!isViewingStep4 || !imageData) return;
+    
+    // Clear existing timer
+    if (detailLevelTimerRef.current) {
+      clearTimeout(detailLevelTimerRef.current);
+    }
+    
+    // Show loading immediately
+    setIsVectorizing(true);
+    
+    detailLevelTimerRef.current = setTimeout(async () => {
+      try {
+        const config = {
+          mode: mode === 'line' ? 'stroke' : mode === 'fill' ? 'fill' : 'mixed',
+          precision: pathPrecision,
+          minArea,
+          simplify: simplifyPath,
+          detailLevel,
+          labels: clusterLabels || undefined,
+          clusterCount: clusterCount || undefined,
+          clusterToMorandiMap: clusterToMorandiMap || undefined,
+        };
+        
+        const paths = await vectorizeImage(imageData, config);
+        setVectorPaths(paths);
+      } catch (error) {
+        console.error('❌ Re-vectorization error:', error);
+      } finally {
+        setIsVectorizing(false);
+      }
+    }, 300); // Debounce 300ms
+    
+    return () => {
+      if (detailLevelTimerRef.current) {
+        clearTimeout(detailLevelTimerRef.current);
+      }
+    };
+  }, [detailLevel, currentStep, editingStep, previewImageData, processedImageData, mode, pathPrecision, minArea, simplifyPath, clusterLabels, clusterCount, clusterToMorandiMap]);
 
   // ======================================================================
   // Edit Mode Handlers
@@ -1029,7 +1085,6 @@ export const VectorizerTool: React.FC<VectorizerToolProps> = ({ onBack }) => {
                     previewManager.activateStep3Preview({ selectedColors: indices });
                     setSelectedColorIndices(indices); // Still need this for merge colors logic
                   }}
-                  // ❌ REMOVED: useBezierCurves prop, now always uses Potrace fallback strategy
                 />
               </CardContent>
             )}
@@ -1080,28 +1135,23 @@ export const VectorizerTool: React.FC<VectorizerToolProps> = ({ onBack }) => {
             {isStepCurrent(4) && (
               <CardContent>
                 <div className="space-y-3">
-                  {isVectorizing ? (
-                    <div className="space-y-4 py-6">
-                      <div className="text-center">
-                        <div className="text-sm text-muted-foreground">{t('vectorizing')}...</div>
-                      </div>
-                      <Button 
-                        variant="outline" 
-                        onClick={handleCancelVectorization}
-                        className="w-full"
-                      >
-                        {t('cancel')}
-                      </Button>
+                  <>
+                    {/* Always show path count and info */}
+                    <div className="p-3 bg-primary/5 rounded-lg">
+                      <p className="text-xs text-muted-foreground">
+                        {isVectorizing ? (
+                          <span className="flex items-center gap-2">
+                            <span className="inline-block w-3 h-3 border-2 border-accent border-t-transparent rounded-full animate-spin"></span>
+                            {t('vectorizing')}...
+                          </span>
+                        ) : (
+                          `${vectorPaths.length} ${t('pathsGenerated')}`
+                        )}
+                      </p>
                     </div>
-                  ) : (
-                    <>
-                      <div className="p-3 bg-primary/5 rounded-lg">
-                        <p className="text-xs text-muted-foreground">
-                          {vectorPaths.length} {t('pathsGenerated')}
-                        </p>
-                      </div>
-                      
-                      {/* Path Layer Panel */}
+                    
+                    {/* Path Layer Panel - show even during vectorization */}
+                    {vectorPaths.length > 0 && (
                       <PathLayerPanel
                         paths={vectorPaths}
                         selectedPathIndices={selectedPathIndices}
@@ -1150,52 +1200,89 @@ export const VectorizerTool: React.FC<VectorizerToolProps> = ({ onBack }) => {
                           previewManager.activateStep4Preview({ hoveredPath: index });
                         }}
                       />
-                      
-                      {/* 🆕 Stroke Width Control (Line Mode only) */}
-                      {mode === 'line' && (
-                        <div className="space-y-2 p-3 bg-accent/5 rounded-lg border border-accent/20">
-                          <div className="flex items-center justify-between">
-                            <Label htmlFor="stroke-width-step4" className="text-sm font-medium">{t('strokeWidth')}</Label>
-                            <span className="text-sm text-muted-foreground font-mono">{strokeWidthMultiplier.toFixed(1)}x</span>
-                          </div>
-                          <Slider
-                            id="stroke-width-step4"
-                            min={0.5}
-                            max={3}
-                            step={0.1}
-                            value={[strokeWidthMultiplier]}
-                            onValueChange={(values) => setStrokeWidthMultiplier(values[0])}
-                          />
-                          <p className="text-xs text-muted-foreground">
-                            {t('adjustStrokeWidthDesc')}
-                          </p>
+                    )}
+                    
+                    {/* 🆕 Stroke Width Control (Line Mode only) */}
+                    {mode === 'line' && (
+                      <div className="space-y-2 p-3 bg-accent/5 rounded-lg border border-accent/20">
+                        <div className="flex items-center justify-between">
+                          <Label htmlFor="stroke-width-step4" className="text-sm font-medium">{t('strokeWidth')}</Label>
+                          <span className="text-sm text-muted-foreground font-mono">{strokeWidthMultiplier.toFixed(1)}x</span>
                         </div>
-                      )}
-                      
-                      <div className="flex gap-2 mt-4">
-                        {editingStep === 4 && (
-                          <Button variant="outline" onClick={handleCancelEdit} className="flex-1">
-                            {t('cancel')}
-                          </Button>
-                        )}
-                        <Button 
-                          onClick={() => {
-                            if (editingStep === 4) {
-                              handleConfirmEdit(4);
-                            } else {
-                              setCurrentStep(5);
-                            }
-                          }}
-                          className="flex-1"
-                        >
-                          <span className="flex items-center gap-2">
-                            <ChevronRight className="h-4 w-4" />
-                            {t('confirmGenerate')}
-                          </span>
-                        </Button>
+                        <Slider
+                          id="stroke-width-step4"
+                          min={0.5}
+                          max={3}
+                          step={0.1}
+                          value={[strokeWidthMultiplier]}
+                          onValueChange={(values) => setStrokeWidthMultiplier(values[0])}
+                          disabled={isVectorizing}
+                        />
+                        <p className="text-xs text-muted-foreground">
+                          {t('adjustStrokeWidthDesc')}
+                        </p>
                       </div>
-                    </>
-                  )}
+                    )}
+                    
+                    {/* 🆕 Detail Level Control */}
+                    <div className="space-y-2 p-3 bg-accent/5 rounded-lg border border-accent/20">
+                      <div className="flex items-center justify-between">
+                        <Label htmlFor="detail-level-step4" className="text-sm font-medium">{t('detailLevel')}</Label>
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs text-muted-foreground">
+                            {detailLevel === 0 && (language === 'zh' ? '最少細節' : 'Minimal')}
+                            {detailLevel > 0 && detailLevel < 50 && (language === 'zh' ? '較少細節' : 'Less Detail')}
+                            {detailLevel === 50 && (language === 'zh' ? '平衡' : 'Balanced')}
+                            {detailLevel > 50 && detailLevel < 100 && (language === 'zh' ? '較多細節' : 'More Detail')}
+                            {detailLevel === 100 && (language === 'zh' ? '最多細節' : 'Maximum')}
+                          </span>
+                          <span className="text-sm text-muted-foreground font-mono font-bold">{detailLevel}</span>
+                        </div>
+                      </div>
+                      <Slider
+                        id="detail-level-step4"
+                        min={0}
+                        max={100}
+                        step={5}
+                        value={[detailLevel]}
+                        onValueChange={(values) => setDetailLevel(values[0])}
+                        disabled={isVectorizing}
+                      />
+                      <div className="text-xs text-muted-foreground space-y-1">
+                        <p>{t('detailLevelDesc')}</p>
+                        <p className="text-accent">
+                          {language === 'zh' 
+                            ? `• 過濾閾值：長度 < ${Math.round(80 - (detailLevel / 100) * 75)}px、面積 < ${Math.round(800 - (detailLevel / 100) * 790)}px²`
+                            : `• Filter: length < ${Math.round(80 - (detailLevel / 100) * 75)}px, area < ${Math.round(800 - (detailLevel / 100) * 790)}px²`
+                          }
+                        </p>
+                      </div>
+                    </div>
+                    
+                    <div className="flex gap-2 mt-4">
+                      {editingStep === 4 && (
+                        <Button variant="outline" onClick={handleCancelEdit} className="flex-1">
+                          {t('cancel')}
+                        </Button>
+                      )}
+                      <Button 
+                        onClick={() => {
+                          if (editingStep === 4) {
+                            handleConfirmEdit(4);
+                          } else {
+                            setCurrentStep(5);
+                          }
+                        }}
+                        className="flex-1"
+                        disabled={isVectorizing}
+                      >
+                        <span className="flex items-center gap-2">
+                          <ChevronRight className="h-4 w-4" />
+                          {t('confirmGenerate')}
+                        </span>
+                      </Button>
+                    </div>
+                  </>
                 </div>
               </CardContent>
             )}
@@ -1243,7 +1330,8 @@ export const VectorizerTool: React.FC<VectorizerToolProps> = ({ onBack }) => {
                         const svg = generateSVG(
                           vectorPaths,
                           originalImage.width,
-                          originalImage.height
+                          originalImage.height,
+                          strokeWidthMultiplier // 🆕 Apply stroke width multiplier
                         );
                         
                         // Track copy action
@@ -1287,7 +1375,8 @@ export const VectorizerTool: React.FC<VectorizerToolProps> = ({ onBack }) => {
                         const svg = generateSVG(
                           vectorPaths,
                           originalImage.width,
-                          originalImage.height
+                          originalImage.height,
+                          strokeWidthMultiplier // 🆕 Apply stroke width multiplier
                         );
                         const blob = new Blob([svg], { type: 'image/svg+xml' });
                         const url = URL.createObjectURL(blob);

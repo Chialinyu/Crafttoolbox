@@ -95,6 +95,7 @@ export interface VectorizationConfig {
   simplify: boolean;
   // ❌ REMOVED: useBezierCurves, bezierAlgorithm - now always uses Potrace fallback strategy
   useImprovedTracing?: boolean; // 🆕 NEW: Use improved contour tracing (default: true)
+  detailLevel?: number; // 🆕 Detail preservation level (0-100, default: 50) - controls path filtering aggressiveness
   isCancelledRef?: React.MutableRefObject<boolean>; // Optional cancellation flag
   labels?: Uint8Array; // 🎯 Cluster labels from preprocessing (sequential: 0, 1, 2, ...)
   clusterCount?: number; // 🎯 Number of clusters
@@ -907,6 +908,220 @@ export function pointsToSmoothBezierPath(points: Point[], closed: boolean): stri
 }
 
 // ============================================================================
+// Intelligent Path Filtering
+// ============================================================================
+
+/**
+ * Filter out insignificant paths while preserving important details
+ * 
+ * Filters based on:
+ * - Path length (too short = noise)
+ * - Path area (too small = noise)
+ * - Path regularity (smooth shapes are likely real features)
+ * - Connectivity (connected to main content = important)
+ * 
+ * Preserves:
+ * - Regular small shapes (dots, small circles)
+ * - Paths connected to larger features
+ * - Paths with smooth, intentional curves
+ */
+function filterInsignificantPaths(
+  paths: VectorPath[],
+  imageWidth: number,
+  imageHeight: number,
+  minArea: number
+): VectorPath[] {
+  if (paths.length === 0) return paths;
+  
+  // Calculate image diagonal for relative thresholds
+  const imageDiagonal = Math.sqrt(imageWidth * imageWidth + imageHeight * imageHeight);
+  
+  // Adaptive thresholds based on image size
+  const minPathLength = Math.max(10, imageDiagonal * 0.01); // 1% of diagonal
+  const minPathArea = Math.max(minArea, 20); // Use user's minArea setting
+  
+  // Calculate each path's importance score
+  const pathScores = paths.map((path, index) => {
+    // 1. Calculate path length
+    let pathLength = 0;
+    for (let i = 1; i < path.points.length; i++) {
+      const dx = path.points[i].x - path.points[i - 1].x;
+      const dy = path.points[i].y - path.points[i - 1].y;
+      pathLength += Math.sqrt(dx * dx + dy * dy);
+    }
+    
+    // 2. Calculate approximate area (bounding box)
+    let minX = Infinity, maxX = -Infinity;
+    let minY = Infinity, maxY = -Infinity;
+    for (const pt of path.points) {
+      minX = Math.min(minX, pt.x);
+      maxX = Math.max(maxX, pt.x);
+      minY = Math.min(minY, pt.y);
+      maxY = Math.max(maxY, pt.y);
+    }
+    const bboxArea = (maxX - minX) * (maxY - minY);
+    
+    // 3. Calculate smoothness (lower = smoother = more likely intentional)
+    let totalAngleChange = 0;
+    for (let i = 1; i < path.points.length - 1; i++) {
+      const v1x = path.points[i].x - path.points[i - 1].x;
+      const v1y = path.points[i].y - path.points[i - 1].y;
+      const v2x = path.points[i + 1].x - path.points[i].x;
+      const v2y = path.points[i + 1].y - path.points[i].y;
+      
+      const angle = Math.atan2(v2y, v2x) - Math.atan2(v1y, v1x);
+      totalAngleChange += Math.abs(angle);
+    }
+    const smoothness = path.points.length > 2 ? totalAngleChange / (path.points.length - 2) : 0;
+    
+    // 4. Check if path is a regular shape (circle/ellipse)
+    const isRegular = path.closed && path.primitive !== undefined;
+    
+    // 5. Calculate importance score
+    let score = 0;
+    
+    // Length contribution (longer = more important)
+    score += Math.min(100, (pathLength / minPathLength) * 50);
+    
+    // Area contribution (larger = more important)
+    score += Math.min(100, (bboxArea / minPathArea) * 30);
+    
+    // Smoothness contribution (smoother = more important)
+    if (smoothness < 1.0) {
+      score += 30; // Smooth paths are likely intentional
+    }
+    
+    // Regular shape bonus (circles, ellipses)
+    if (isRegular) {
+      score += 40;
+    }
+    
+    // Stroke width contribution (thicker = more visible = important)
+    if (path.strokeWidth && path.strokeWidth > 3) {
+      score += 20;
+    }
+    
+    return {
+      index,
+      score,
+      pathLength,
+      bboxArea,
+      smoothness,
+      isRegular,
+    };
+  });
+  
+  // ========================================
+  // STEP 1: Remove tiny paths (likely noise)
+  // ========================================
+  const minAbsoluteArea = 100; // 10px × 10px minimum
+  const minAbsoluteLength = 15; // 15px minimum length
+  
+  let filtered = paths.filter((_, index) => {
+    const pathScore = pathScores[index];
+    
+    // 🚫 HARD FILTER: Remove extremely small paths
+    if (pathScore.bboxArea < minAbsoluteArea && pathScore.pathLength < minAbsoluteLength) {
+      return false; // Too small to be intentional
+    }
+    
+    // 🚫 HARD FILTER: Remove paths with < 2 points
+    if (paths[index].points.length < 2) {
+      return false;
+    }
+    
+    return true;
+  });
+  
+  // ========================================
+  // STEP 2: Remove duplicate/overlapping paths
+  // ========================================
+  const deduplicatedPaths: VectorPath[] = [];
+  const dedupScores: typeof pathScores = [];
+  
+  for (let i = 0; i < filtered.length; i++) {
+    const currentPath = filtered[i];
+    const currentScore = pathScores[paths.indexOf(currentPath)];
+    
+    // Calculate center of current path
+    let centerX = 0, centerY = 0;
+    for (const pt of currentPath.points) {
+      centerX += pt.x;
+      centerY += pt.y;
+    }
+    centerX /= currentPath.points.length;
+    centerY /= currentPath.points.length;
+    
+    // Check if there's a better path nearby
+    let isDuplicate = false;
+    for (let j = 0; j < deduplicatedPaths.length; j++) {
+      const existingPath = deduplicatedPaths[j];
+      const existingScore = dedupScores[j];
+      
+      // Calculate center of existing path
+      let exCenterX = 0, exCenterY = 0;
+      for (const pt of existingPath.points) {
+        exCenterX += pt.x;
+        exCenterY += pt.y;
+      }
+      exCenterX /= existingPath.points.length;
+      exCenterY /= existingPath.points.length;
+      
+      // Calculate distance between centers
+      const distance = Math.sqrt(
+        (centerX - exCenterX) ** 2 + (centerY - exCenterY) ** 2
+      );
+      
+      // If paths are very close AND both are small
+      const proximityThreshold = Math.min(currentScore.bboxArea, existingScore.bboxArea) ** 0.5;
+      if (distance < proximityThreshold * 0.5) {
+        // Keep the one with higher score
+        if (currentScore.score > existingScore.score) {
+          // Replace existing with current
+          deduplicatedPaths[j] = currentPath;
+          dedupScores[j] = currentScore;
+        }
+        isDuplicate = true;
+        break;
+      }
+    }
+    
+    if (!isDuplicate) {
+      deduplicatedPaths.push(currentPath);
+      dedupScores.push(currentScore);
+    }
+  }
+  
+  filtered = deduplicatedPaths;
+  
+  // ========================================
+  // STEP 3: Score-based filtering
+  // ========================================
+  const threshold = 50; // Increased from 40 to be more aggressive
+  
+  filtered = filtered.filter((path, index) => {
+    const pathScore = dedupScores[index];
+    
+    // ✅ Always keep regular shapes (circles, ellipses)
+    if (pathScore.isRegular) return true;
+    
+    // ✅ Always keep long paths
+    if (pathScore.pathLength > minPathLength * 3) return true;
+    
+    // ✅ Keep paths with good score
+    return pathScore.score >= threshold;
+  });
+  
+  // 🎯 DEBUG: Log filtering results
+  const removed = paths.length - filtered.length;
+  if (removed > 0) {
+    console.log(`🧹 Filtered ${removed} insignificant paths (kept ${filtered.length}/${paths.length})`);
+  }
+  
+  return filtered;
+}
+
+// ============================================================================
 // Main Vectorization Function
 // ============================================================================
 
@@ -962,7 +1177,7 @@ export async function vectorizeImage(
       
       const skeleton = graphToSkeleton(prunedGraph, width, height);
       
-      const skeletonPaths = traceSkeletonPaths(skeleton, width, height);
+      const skeletonPaths = traceSkeletonPaths(skeleton, width, height, config.detailLevel ?? 50);
       
       // Process CLOSED SHAPES - use ELLIPSE FITTING for perfect curves
       for (const shape of closedShapes) {
@@ -1031,8 +1246,11 @@ export async function vectorizeImage(
       }
       
       // Process CENTERLINES
+      // 🎯 Adaptive minimum points based on detail level
+      const minCenterlinePoints = (config.detailLevel ?? 50) >= 80 ? 1 : ((config.detailLevel ?? 50) >= 50 ? 2 : 3);
+      
       for (const skPath of skeletonPaths) {
-        if (skPath.points.length < 3) continue;
+        if (skPath.points.length < minCenterlinePoints) continue;
         
         // Calculate width for each point
         const widths: number[] = [];
@@ -1059,7 +1277,11 @@ export async function vectorizeImage(
         let svgPath: string | undefined;
         if (points.length >= 3) {
           try {
-            svgPath = pointsToSmoothBezierPath(points, false); // OPEN
+            // 🐛 DEBUG: Use straight lines for Line Mode to see raw skeleton shape
+            // This helps debug X-crossing issues (mouth / \ shapes)
+            // TODO: Re-enable bezier after confirming skeleton is correct
+            svgPath = pointsToSVGPath(points, false); // OPEN path with straight lines
+            // svgPath = pointsToSmoothBezierPath(points, false); // DISABLED temporarily
           } catch (e) {
             svgPath = pointsToSVGPath(points, false);
           }
@@ -1080,7 +1302,11 @@ export async function vectorizeImage(
         });
       }
       
-      return paths;
+      // 🧹 INTELLIGENT PATH FILTERING - Using conservative filter
+      const { filterInsignificantPaths } = await import('./pathFilter');
+      const filteredPaths = filterInsignificantPaths(paths, width, height, config.detailLevel ?? 50);
+      
+      return filteredPaths;
     }
     
     // ✅ Cluster-based vectorization (fill mode - original logic)
@@ -2335,13 +2561,15 @@ export function simplifyPath(points: Point[], tolerance: number): Point[] {
 export function generateSVG(
   paths: VectorPath[],
   width: number,
-  height: number
+  height: number,
+  strokeWidthMultiplier: number = 1.0 // 🆕 Stroke width multiplier for line mode
 ): string {
   let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">\n`;
   
   for (const path of paths) {
     const stroke = path.type === 'stroke' ? (path.color || '#000000') : 'none';
-    const strokeWidth = path.type === 'stroke' ? (path.strokeWidth || 2) : 0;
+    const baseStrokeWidth = path.type === 'stroke' ? (path.strokeWidth || 2) : 0;
+    const strokeWidth = baseStrokeWidth * strokeWidthMultiplier; // 🆕 Apply multiplier
     
     // 🆕 Render geometric primitives
     if (path.primitive) {

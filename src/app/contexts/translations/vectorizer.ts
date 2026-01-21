@@ -123,6 +123,8 @@ export const vectorizerTranslations = {
   separateFgBgDesc: { zh: '分離前景與背景', en: 'Separate foreground from background' },
   colorClustersDesc: { zh: '向量化的顏色分群數量', en: 'Number of color clusters for vectorization' },
   adjustStrokeWidthDesc: { zh: '調整線條粗細倍率', en: 'Adjust stroke width multiplier' },
+  detailLevel: { zh: '細節保留', en: 'Detail Preservation' },
+  detailLevelDesc: { zh: '控制保留或過濾細小路徑的靈敏度（值越高保留越多細節）', en: 'Controls sensitivity for preserving or filtering small paths (higher = keep more details)' },
   vectorEditInProgress: { zh: '向量節點編輯功能開發中...', en: 'Vector node editing feature in development...' },
   
   // Bezier Curves

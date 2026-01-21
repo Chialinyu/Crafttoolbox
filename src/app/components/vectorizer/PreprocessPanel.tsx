@@ -30,7 +30,7 @@ interface PreprocessPanelProps {
   onMergeColors?: (indices: number[]) => void;
   selectedColorIndices?: number[];
   onColorSelect?: (indices: number[]) => void;
-  // ❌ REMOVED: Props for Bezier Curves - now always uses Potrace fallback strategy
+  // ❌ REMOVED: Stroke Width and Detail Level moved to Step 4
 }
 
 /**
@@ -58,10 +58,7 @@ export const PreprocessPanel: React.FC<PreprocessPanelProps> = ({
   onMergeColors,
   selectedColorIndices,
   onColorSelect,
-  // 🆕 Stroke Width Control (Line Mode only)
-  strokeWidthMultiplier = 1,
-  onStrokeWidthChange,
-  // ❌ REMOVED: Props for Bezier Curves - now always uses Potrace fallback strategy
+  // ❌ REMOVED: Stroke Width and Detail Level moved to Step 4
 }) => {
   const { t } = useLanguage();
 

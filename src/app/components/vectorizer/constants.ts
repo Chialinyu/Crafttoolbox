@@ -23,6 +23,7 @@ export const DEFAULT_VALUES = {
   PATH_PRECISION: 30,
   SIMPLIFY_PATH: true,
   STROKE_WIDTH: 3, // 🆕 Default stroke width for line mode
+  DETAIL_LEVEL: 50, // 🆕 Detail preservation level (0-100, higher = keep more paths)
   
   // Display settings
   IMAGE_OPACITY: 0.3,

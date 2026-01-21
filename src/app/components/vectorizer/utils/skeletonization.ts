@@ -140,7 +140,8 @@ export interface SkeletonPath {
 export function traceSkeletonPaths(
   skeleton: Uint8Array,
   width: number,
-  height: number
+  height: number,
+  detailLevel: number = 50 // 🆕 Detail preservation level (0-100, higher = keep more paths)
 ): SkeletonPath[] {
   const visited = new Uint8Array(width * height);
   const paths: SkeletonPath[] = [];
@@ -149,12 +150,17 @@ export function traceSkeletonPaths(
   const junctions = findJunctions(skeleton, width, height);
   const endpoints = findEndpoints(skeleton, width, height);
   
+  // 🎯 Adaptive minimum path length based on detail level
+  // detailLevel 100 → keep even 1-point paths
+  // detailLevel 0 → only keep paths with 3+ points
+  const minPathPoints = detailLevel >= 80 ? 1 : (detailLevel >= 50 ? 2 : 3);
+  
   // Start tracing from endpoints
   for (const endpoint of endpoints) {
     if (visited[endpoint.y * width + endpoint.x]) continue;
     
     const path = tracePath(skeleton, width, height, endpoint.x, endpoint.y, visited, junctions);
-    if (path.points.length > 1) { // Ignore single-pixel paths
+    if (path.points.length >= minPathPoints) {
       paths.push(path);
     }
   }
@@ -164,7 +170,8 @@ export function traceSkeletonPaths(
     const jx = junctionIdx % width;
     const jy = Math.floor(junctionIdx / width);
     
-    // Try to start paths from unvisited neighbors of this junction
+    // 🆕 For X-crossings (4 neighbors), extract all 4 directions as separate paths
+    const junctionNeighbors: Array<{ x: number; y: number }> = [];
     for (let dy = -1; dy <= 1; dy++) {
       for (let dx = -1; dx <= 1; dx++) {
         if (dx === 0 && dy === 0) continue;
@@ -175,10 +182,39 @@ export function traceSkeletonPaths(
         
         const nidx = ny * width + nx;
         if (skeleton[nidx] === 0) continue;
+        junctionNeighbors.push({ x: nx, y: ny });
+      }
+    }
+    
+    // 🎯 For X-junctions (4 neighbors), create 2 continuous paths by pairing opposite directions
+    if (junctionNeighbors.length === 4) {
+      // Reset visited for this junction temporarily
+      const jidx = jy * width + jx;
+      const wasVisited = visited[jidx];
+      visited[jidx] = 0; // Allow path to pass through
+      
+      let pathCount = 0;
+      // Trace from each unvisited neighbor
+      for (const neighbor of junctionNeighbors) {
+        const nidx = neighbor.y * width + neighbor.x;
         if (visited[nidx]) continue;
         
-        const path = tracePath(skeleton, width, height, nx, ny, visited, junctions);
-        if (path.points.length > 1) {
+        const path = tracePath(skeleton, width, height, neighbor.x, neighbor.y, visited, junctions);
+        if (path.points.length >= minPathPoints) {
+          pathCount++;
+          paths.push(path);
+        }
+      }
+      
+      visited[jidx] = wasVisited; // Restore
+    } else {
+      // Regular junction (T/Y-shape) - trace from unvisited neighbors
+      for (const neighbor of junctionNeighbors) {
+        const nidx = neighbor.y * width + neighbor.x;
+        if (visited[nidx]) continue;
+        
+        const path = tracePath(skeleton, width, height, neighbor.x, neighbor.y, visited, junctions);
+        if (path.points.length >= minPathPoints) {
           paths.push(path);
         }
       }
@@ -191,7 +227,7 @@ export function traceSkeletonPaths(
       const idx = y * width + x;
       if (skeleton[idx] > 0 && !visited[idx]) {
         const path = tracePath(skeleton, width, height, x, y, visited, junctions);
-        if (path.points.length > 1) {
+        if (path.points.length >= minPathPoints) {
           paths.push(path);
         }
       }
@@ -206,9 +242,31 @@ export function traceSkeletonPaths(
   const avgLength = pathLengths.length > 0 ? (pathLengths.reduce((a, b) => a + b, 0) / pathLengths.length).toFixed(1) : 0;
   
   // 🔧 POST-PROCESSING: Merge paths with nearby endpoints (gap closing)
-  const mergedPaths = mergeNearbyPaths(paths, 5); // 5px max gap
+  // 🆕 Increased gap from 5px to 15px to reconnect X-crossings that Zhang-Suen cut apart
+  const mergedPaths = mergeNearbyPaths(paths, 15); // 15px max gap (was 5px)
   
-  return mergedPaths;
+  // 🎯 X-CROSSING RECONSTRUCTION: Merge collinear paths (same direction)
+  // This specifically fixes X-shapes (mouth / \\) that got split into 4+ segments
+  // 🆕 Iterative approach: repeat until no more merges possible
+  let reconstructedPaths = mergedPaths;
+  let iteration = 0;
+  let totalMerged = 0;
+  
+  while (iteration < 5) { // Max 5 iterations to prevent infinite loops
+    const prevCount = reconstructedPaths.length;
+    reconstructedPaths = mergeCollinearPaths(reconstructedPaths, 40); // 40px max gap (was 25px)
+    const merged = prevCount - reconstructedPaths.length;
+    
+    totalMerged += merged;
+    iteration++;
+    
+    if (merged === 0) break; // No more merges possible
+  }
+  
+  // 🆕 FINAL CLEANUP: Remove sub-paths (duplicates created during iterative merging)
+  const cleanedPaths = removeSubPaths(reconstructedPaths, detailLevel);
+  
+  return cleanedPaths;
 }
 
 /**
@@ -294,6 +352,250 @@ function mergeNearbyPaths(paths: SkeletonPath[], maxGap: number): SkeletonPath[]
 }
 
 /**
+ * 🆕 Merge collinear paths (same direction)
+ * This specifically fixes X-shapes (mouth / \\) that got split into 4+ segments
+ */
+function mergeCollinearPaths(paths: SkeletonPath[], maxGap: number): SkeletonPath[] {
+  if (paths.length === 0) return paths;
+  
+  const merged: SkeletonPath[] = [];
+  const used = new Set<number>();
+  
+  for (let i = 0; i < paths.length; i++) {
+    if (used.has(i)) continue;
+    
+    let currentPath = paths[i];
+    let didMerge = true;
+    
+    // Keep trying to extend this path until no more merges possible
+    while (didMerge) {
+      didMerge = false;
+      
+      const start = currentPath.points[0];
+      const end = currentPath.points[currentPath.points.length - 1];
+      
+      // Try to find a nearby path to merge with
+      for (let j = 0; j < paths.length; j++) {
+        if (j === i || used.has(j)) continue;
+        
+        const otherPath = paths[j];
+        const otherStart = otherPath.points[0];
+        const otherEnd = otherPath.points[otherPath.points.length - 1];
+        
+        // Check all 4 possible connections
+        const distEndToStart = distance(end, otherStart);
+        const distEndToEnd = distance(end, otherEnd);
+        const distStartToStart = distance(start, otherStart);
+        const distStartToEnd = distance(start, otherEnd);
+        
+        const minDist = Math.min(distEndToStart, distEndToEnd, distStartToStart, distStartToEnd);
+        
+        if (minDist <= maxGap) {
+          // Check if paths are collinear (same direction)
+          const isCollinear = isCollinearPaths(currentPath, otherPath, minDist);
+          
+          if (isCollinear) {
+            // Merge!
+            used.add(j);
+            didMerge = true;
+            
+            if (minDist === distEndToStart) {
+              // Append otherPath to end of currentPath
+              currentPath = {
+                points: [...currentPath.points, ...otherPath.points],
+                isBranch: currentPath.isBranch || otherPath.isBranch,
+              };
+            } else if (minDist === distEndToEnd) {
+              // Append reversed otherPath to end
+              currentPath = {
+                points: [...currentPath.points, ...otherPath.points.slice().reverse()],
+                isBranch: currentPath.isBranch || otherPath.isBranch,
+              };
+            } else if (minDist === distStartToStart) {
+              // Prepend reversed otherPath to start
+              currentPath = {
+                points: [...otherPath.points.slice().reverse(), ...currentPath.points],
+                isBranch: currentPath.isBranch || otherPath.isBranch,
+              };
+            } else {
+              // Prepend otherPath to start
+              currentPath = {
+                points: [...otherPath.points, ...currentPath.points],
+                isBranch: currentPath.isBranch || otherPath.isBranch,
+              };
+            }
+            
+            break; // Found a merge, restart search
+          }
+        }
+      }
+    }
+    
+    merged.push(currentPath);
+    used.add(i);
+  }
+  
+  return merged;
+}
+
+/**
+ * 🆕 Check if two paths are collinear (same direction)
+ */
+function isCollinearPaths(path1: SkeletonPath, path2: SkeletonPath, connectionDist: number): boolean {
+  // Get endpoints
+  const p1Start = path1.points[0];
+  const p1End = path1.points[path1.points.length - 1];
+  const p2Start = path2.points[0];
+  const p2End = path2.points[path2.points.length - 1];
+  
+  // Skip if paths are too long (likely already merged correctly)
+  if (path1.points.length > 50 || path2.points.length > 50) return false;
+  
+  // Calculate direction vectors using first/last 3 points for stability
+  const getDirection = (path: SkeletonPath, fromEnd: boolean): { x: number; y: number } => {
+    const pts = path.points;
+    if (pts.length < 2) return { x: 0, y: 0 };
+    
+    const numPts = Math.min(3, pts.length);
+    const start = fromEnd ? pts[pts.length - numPts] : pts[0];
+    const end = fromEnd ? pts[pts.length - 1] : pts[numPts - 1];
+    
+    return {
+      x: end.x - start.x,
+      y: end.y - start.y,
+    };
+  };
+  
+  // Try all 4 possible connections
+  const connections = [
+    { p1End: false, p2End: false, dist: distance(p1Start, p2Start) }, // Start-Start
+    { p1End: false, p2End: true, dist: distance(p1Start, p2End) },   // Start-End
+    { p1End: true, p2End: false, dist: distance(p1End, p2Start) },   // End-Start
+    { p1End: true, p2End: true, dist: distance(p1End, p2End) },      // End-End
+  ];
+  
+  // Find closest connection
+  const closest = connections.reduce((min, conn) => conn.dist < min.dist ? conn : min);
+  
+  // Get directions at connection point
+  const dir1 = getDirection(path1, closest.p1End);
+  const dir2 = getDirection(path2, closest.p2End);
+  
+  // Normalize
+  const norm1 = Math.sqrt(dir1.x * dir1.x + dir1.y * dir1.y);
+  const norm2 = Math.sqrt(dir2.x * dir2.x + dir2.y * dir2.y);
+  
+  if (norm1 < 1 || norm2 < 1) return false; // Too short
+  
+  let unitDir1 = { x: dir1.x / norm1, y: dir1.y / norm1 };
+  let unitDir2 = { x: dir2.x / norm2, y: dir2.y / norm2 };
+  
+  // 🐛 FIX: Flip dir2 if connecting matching ends (End-End or Start-Start)
+  // For these cases, we need to reverse path2's direction to align with path1
+  const needsFlip = closest.p1End === closest.p2End;
+  if (needsFlip) {
+    unitDir2 = { x: -unitDir2.x, y: -unitDir2.y };
+  }
+  
+  // Calculate dot product (now both directions should point "forward" along the merged path)
+  const dotProduct = unitDir1.x * unitDir2.x + unitDir1.y * unitDir2.y;
+  
+  // Collinear if dot product > 0.7 (about 45° tolerance) - relaxed from 0.85
+  const isCollinear = dotProduct > 0.7;
+  
+  // 🐛 DEBUG: Log all near-collinear attempts (even failed ones)
+  if (connectionDist < 25) {
+    const angleDeg = (Math.acos(Math.min(1, Math.max(-1, dotProduct))) * 180 / Math.PI).toFixed(1);
+  }
+  
+  return isCollinear;
+}
+
+/**
+ * 🆕 Check if path1 is a sub-path of path2 (contained within)
+ * Used to detect duplicate segments created during iterative merging
+ * 
+ * @param detailLevel - Detail preservation level (0-100)
+ *   - Higher values = stricter sub-path detection (keep more independent paths)
+ *   - Lower values = looser sub-path detection (remove more potential duplicates)
+ */
+function isSubPath(shorter: SkeletonPath, longer: SkeletonPath, detailLevel: number = 50): boolean {
+  if (shorter.points.length >= longer.points.length) return false;
+  if (shorter.points.length < 2 || longer.points.length < 2) return false;
+  
+  // 🎯 Adaptive tolerance based on detail level
+  // detailLevel 0 (low detail) → tolerance = 10px (aggressive removal)
+  // detailLevel 50 (balanced) → tolerance = 5px (moderate)
+  // detailLevel 100 (high detail) → tolerance = 2px (strict, keep more)
+  const tolerance = 10 - (detailLevel / 100) * 8; // Range: 2-10 pixels
+  
+  // Check if shorter path's endpoints are close to ANY points in longer path
+  const shorterStart = shorter.points[0];
+  const shorterEnd = shorter.points[shorter.points.length - 1];
+  
+  let foundStart = false;
+  let foundEnd = false;
+  
+  for (const point of longer.points) {
+    if (distance(shorterStart, point) < tolerance) foundStart = true;
+    if (distance(shorterEnd, point) < tolerance) foundEnd = true;
+    
+    if (foundStart && foundEnd) {
+      // 🆕 ADDITIONAL CHECK: Verify that shorter path is actually contained
+      // by checking if most of its points are close to the longer path
+      let containedPoints = 0;
+      const sampleSize = Math.min(shorter.points.length, 10); // Sample up to 10 points
+      const step = Math.max(1, Math.floor(shorter.points.length / sampleSize));
+      
+      for (let i = 0; i < shorter.points.length; i += step) {
+        const sp = shorter.points[i];
+        for (const lp of longer.points) {
+          if (distance(sp, lp) < tolerance) {
+            containedPoints++;
+            break;
+          }
+        }
+      }
+      
+      const containmentRatio = containedPoints / Math.ceil(shorter.points.length / step);
+      // Require at least 80% of sampled points to be contained
+      return containmentRatio >= 0.8;
+    }
+  }
+  
+  return false;
+}
+
+/**
+ * 🆕 Remove sub-paths (duplicates created during iterative merging)
+ * 
+ * @param detailLevel - Detail preservation level (0-100, higher = keep more paths)
+ */
+function removeSubPaths(paths: SkeletonPath[], detailLevel: number = 50): SkeletonPath[] {
+  const cleaned: SkeletonPath[] = [];
+  
+  for (let i = 0; i < paths.length; i++) {
+    const path = paths[i];
+    let isSub = false;
+    
+    for (let j = 0; j < paths.length; j++) {
+      if (i === j) continue;
+      
+      if (isSubPath(path, paths[j], detailLevel)) {
+        isSub = true;
+        break;
+      }
+    }
+    
+    if (!isSub) {
+      cleaned.push(path);
+    }
+  }
+  
+  return cleaned;
+}
+
+/**
  * Calculate Euclidean distance between two points
  */
 function distance(p1: { x: number; y: number }, p2: { x: number; y: number }): number {
@@ -373,6 +675,7 @@ function findJunctions(
   const junctions = new Set<number>();
   
   let cnStats = { cn0: 0, cn1: 0, cn2: 0, cn3plus: 0, xCross: 0 };
+  const cn2Points: Array<{ x: number; y: number; neighbors: number }> = []; // 🆕 Track CN=2 points
   
   for (let y = 1; y < height - 1; y++) {
     for (let x = 1; x < width - 1; x++) {
@@ -386,7 +689,10 @@ function findJunctions(
       // Track statistics
       if (cn === 0) cnStats.cn0++;
       else if (cn === 1) cnStats.cn1++;
-      else if (cn === 2) cnStats.cn2++;
+      else if (cn === 2) {
+        cnStats.cn2++;
+        cn2Points.push({ x, y, neighbors: neighborCount }); // 🆕 Record CN=2 points
+      }
       else cnStats.cn3plus++;
       
       // 🎯 Junction detection:
@@ -394,7 +700,12 @@ function findJunctions(
       // 2. CN = 2 with 4 neighbors: X-shaped crossings
       // 3. CN ≥ 2 with 4 neighbors in diagonal pattern: X-crossings that got thinned
       const isXCrossing = neighborCount === 4 && (cn === 2 || (cn >= 2 && hasDiagonalPattern(skeleton, width, height, x, y)));
-      const isJunction = cn >= 3 || isXCrossing;
+      
+      // 🆕 RELAXED X-detection: Also detect thin X-crossings with 3-4 neighbors and CN=2
+      // This catches elongated X-shapes (like mouth / \) that Zhang-Suen thinned aggressively
+      const isThinXCrossing = (neighborCount >= 3 && cn === 2);
+      
+      const isJunction = cn >= 3 || isXCrossing || isThinXCrossing;
       
       if (isJunction) {
         junctions.add(idx);
@@ -548,6 +859,7 @@ function tracePath(
   let x = startX;
   let y = startY;
   let isBranch = false;
+  let passedThroughJunction = false; // 🆕 Track if we passed through any junction
   
   // Previous direction (for maintaining continuity)
   let prevDx = 0;
@@ -563,7 +875,11 @@ function tracePath(
     // Check if junction
     if (junctions.has(idx) && points.length > 1) { // Don't stop at start junction
       isBranch = true;
-      break; // Stop at junctions
+      // 🆕 DON'T stop at junctions anymore - continue tracing through X-crossings!
+      // This allows X-shapes to be traced as two complete lines (/ and \)
+      // instead of stopping at the center and creating two V-shapes
+      // break; // REMOVED - was cutting X-junctions into V-shapes
+      passedThroughJunction = true; // 🆕 Mark that we passed through a junction
     }
     
     // Find next unvisited neighbor (prefer continuing in same direction)
@@ -580,7 +896,11 @@ function tracePath(
         
         const nidx = ny * width + nx;
         if (skeleton[nidx] === 0) continue;
-        if (visited[nidx]) continue;
+        
+        // 🆕 Allow passing through visited JUNCTION points (for X-crossings)
+        // But still skip visited non-junction points
+        const isJunction = junctions.has(nidx);
+        if (visited[nidx] && !isJunction) continue;
         
         // Score neighbor: prefer continuing in same direction
         let score = 0;
@@ -605,6 +925,11 @@ function tracePath(
     prevDy = next.dy;
     x = next.x;
     y = next.y;
+  }
+  
+  // 🆕 If we passed through a junction, mark the path as a branch
+  if (passedThroughJunction) {
+    isBranch = true;
   }
   
   return { points, isBranch };
@@ -632,8 +957,6 @@ export function extractContours(
   const visited = new Uint8Array(width * height);
   const contours: ContourPath[] = [];
   
-  console.log('🔵 Contour Extraction: Starting...');
-  
   // Find all connected components (flood fill)
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
@@ -651,8 +974,6 @@ export function extractContours(
       }
     }
   }
-  
-  console.log(`🔵 Contour Extraction: Found ${contours.length} contours (minArea=${minArea})`);
   
   return contours;
 }

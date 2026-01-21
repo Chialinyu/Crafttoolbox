@@ -14,6 +14,7 @@
  * ✅ Morandi Color Palette (10 aesthetic colors)
  * ✅ Gaussian Blur & Edge Detection
  * ✅ Threshold & Binary conversion
+ * ✅ Region Classification & Visualization
  * 
  * WORKFLOW:
  * 1. Load Image → ImageData
@@ -37,6 +38,7 @@
 
 import { CLUSTER_LABELS } from '../constants';
 import { evaluateSkeletonQuality } from './skeletonGraph';
+import { classifyRegions, visualizeClassifiedRegions } from './regionClassifier';
 
 /**
  * Convert image to grayscale
@@ -167,6 +169,81 @@ export function calculateOptimalThreshold(imageData: ImageData): number {
   }
   
   return threshold;
+}
+
+/**
+ * 🆕 Calculate suggested detail level based on image complexity
+ * Analyzes edge density to recommend appropriate detail preservation level
+ * 
+ * @returns Suggested detail level (0-100)
+ *   - Simple images (low edge density) → Lower detail level (faster, cleaner)
+ *   - Complex images (high edge density) → Higher detail level (preserve details)
+ */
+export function calculateSuggestedDetailLevel(imageData: ImageData): number {
+  const width = imageData.width;
+  const height = imageData.height;
+  const data = imageData.data;
+  
+  // Convert to grayscale and calculate edge density using Sobel
+  let edgeCount = 0;
+  const threshold = 30; // Edge detection threshold
+  
+  // Sample every 4th pixel for performance (still representative)
+  const step = 4;
+  
+  for (let y = step; y < height - step; y += step) {
+    for (let x = step; x < width - step; x += step) {
+      const idx = (y * width + x) * 4;
+      
+      // Get pixel intensity (grayscale)
+      const intensity = (data[idx] + data[idx + 1] + data[idx + 2]) / 3;
+      
+      // Sobel X
+      const rightIdx = (y * width + (x + step)) * 4;
+      const leftIdx = (y * width + (x - step)) * 4;
+      const rightIntensity = (data[rightIdx] + data[rightIdx + 1] + data[rightIdx + 2]) / 3;
+      const leftIntensity = (data[leftIdx] + data[leftIdx + 1] + data[leftIdx + 2]) / 3;
+      const gx = rightIntensity - leftIntensity;
+      
+      // Sobel Y
+      const topIdx = ((y - step) * width + x) * 4;
+      const bottomIdx = ((y + step) * width + x) * 4;
+      const topIntensity = (data[topIdx] + data[topIdx + 1] + data[topIdx + 2]) / 3;
+      const bottomIntensity = (data[bottomIdx] + data[bottomIdx + 1] + data[bottomIdx + 2]) / 3;
+      const gy = bottomIntensity - topIntensity;
+      
+      // Edge magnitude
+      const magnitude = Math.sqrt(gx * gx + gy * gy);
+      
+      if (magnitude > threshold) {
+        edgeCount++;
+      }
+    }
+  }
+  
+  // Calculate edge density (edges per 1000 sampled pixels)
+  const sampledPixels = Math.floor((width / step) * (height / step));
+  const edgeDensity = (edgeCount / sampledPixels) * 1000;
+  
+  // Map edge density to detail level (0-100)
+  // Low density (< 50 edges/1000px) → 30-50 detail level
+  // Medium density (50-150) → 50-70 detail level
+  // High density (> 150) → 70-90 detail level
+  let suggestedLevel: number;
+  
+  if (edgeDensity < 50) {
+    // Simple image: low detail level
+    suggestedLevel = 30 + (edgeDensity / 50) * 20; // 30-50
+  } else if (edgeDensity < 150) {
+    // Medium complexity: moderate detail level
+    suggestedLevel = 50 + ((edgeDensity - 50) / 100) * 20; // 50-70
+  } else {
+    // Complex image: high detail level
+    suggestedLevel = 70 + Math.min((edgeDensity - 150) / 200, 1) * 20; // 70-90
+  }
+  
+  // Round to nearest 5
+  return Math.round(suggestedLevel / 5) * 5;
 }
 
 /**
@@ -465,8 +542,184 @@ export function preprocessImage(
 ): PreprocessResult {
   const mode = config.mode || 'line';
   
+  // ========================================
+  // 🎨 Mixed Mode: Color clustering + region classification
+  // ========================================
+  if (mode === 'mixed' && config.colorCount && config.colorCount > 1) {
+    // Step 1: Apply blur for noise reduction
+    let processed = imageData;
+    if (config.blurRadius > 0) {
+      processed = gaussianBlur(processed, config.blurRadius);
+    }
+    
+    // Step 2: 🎯 Use COLOR CLUSTERING instead of binarization
+    const { labels, colors } = kMeansColorClustering(processed, config.colorCount);
+    
+    // Step 3: 🎯 Classify each COLOR CLUSTER by shape
+    // Create a map: cluster ID -> region type (line/fill)
+    const clusterTypes = new Map<number, 'line' | 'fill'>();
+    
+    for (let clusterId = 0; clusterId < config.colorCount; clusterId++) {
+      // Collect all pixels belonging to this cluster
+      const clusterPixels: number[] = [];
+      for (let i = 0; i < labels.length; i++) {
+        if (labels[i] === clusterId) {
+          clusterPixels.push(i);
+        }
+      }
+      
+      if (clusterPixels.length === 0) {
+        clusterTypes.set(clusterId, 'fill');
+        continue;
+      }
+      
+      // Analyze shape of this cluster
+      const { width, height } = processed;
+      
+      // Calculate bounding box
+      let minX = width, maxX = 0, minY = height, maxY = 0;
+      for (const idx of clusterPixels) {
+        const x = idx % width;
+        const y = Math.floor(idx / width);
+        minX = Math.min(minX, x);
+        maxX = Math.max(maxX, x);
+        minY = Math.min(minY, y);
+        maxY = Math.max(maxY, y);
+      }
+      
+      const regionWidth = maxX - minX + 1;
+      const regionHeight = maxY - minY + 1;
+      const aspectRatio = Math.max(regionWidth, regionHeight) / Math.min(regionWidth, regionHeight);
+      
+      // Calculate average thickness
+      const bboxPerimeter = 2 * (regionWidth + regionHeight);
+      const avgThickness = (clusterPixels.length / bboxPerimeter) || 1;
+      
+      // Calculate perimeter/area ratio
+      let perimeterPixels = 0;
+      for (const idx of clusterPixels) {
+        const x = idx % width;
+        const y = Math.floor(idx / width);
+        
+        // Check if this pixel is on boundary (any neighbor is different cluster or transparent)
+        const neighbors = [
+          y > 0 ? labels[(y - 1) * width + x] : 255,
+          y < height - 1 ? labels[(y + 1) * width + x] : 255,
+          x > 0 ? labels[y * width + (x - 1)] : 255,
+          x < width - 1 ? labels[y * width + (x + 1)] : 255,
+        ];
+        
+        if (neighbors.some(n => n !== clusterId)) {
+          perimeterPixels++;
+        }
+      }
+      const perimeterAreaRatio = perimeterPixels / clusterPixels.length;
+      
+      // Classify as line or fill
+      // 🎯 针对粗线条 icon 的宽松阈值
+      const isLine = (
+        (aspectRatio > 1.8 && avgThickness < 150) ||  // 🔧 超宽松: 允许很粗的线条
+        perimeterAreaRatio > 0.35 ||                   
+        (aspectRatio > 2.0)                            // 🔧 只要稍微细长就算线条
+      ) && clusterPixels.length > 15 && clusterPixels.length < 3000000; // 🔧 允许超大面积
+      
+      clusterTypes.set(clusterId, isLine ? 'line' : 'fill');
+    }
+    
+    // Step 4: Visualize - line clusters as black, fill clusters as Morandi colors
+    const output = new ImageData(processed.width, processed.height);
+    for (let i = 0; i < labels.length; i++) {
+      const cluster = labels[i];
+      const pixelIdx = i * 4;
+      
+      // Skip transparent pixels
+      if (cluster >= config.colorCount || processed.data[pixelIdx + 3] < 128) {
+        output.data[pixelIdx] = 255;
+        output.data[pixelIdx + 1] = 255;
+        output.data[pixelIdx + 2] = 255;
+        output.data[pixelIdx + 3] = 0;
+        continue;
+      }
+      
+      const type = clusterTypes.get(cluster);
+      
+      if (type === 'line') {
+        // Black stroke
+        output.data[pixelIdx] = 0;
+        output.data[pixelIdx + 1] = 0;
+        output.data[pixelIdx + 2] = 0;
+        output.data[pixelIdx + 3] = 255;
+      } else {
+        // Morandi color fill
+        const color = morandiPalette[cluster % morandiPalette.length];
+        output.data[pixelIdx] = color[0];
+        output.data[pixelIdx + 1] = color[1];
+        output.data[pixelIdx + 2] = color[2];
+        output.data[pixelIdx + 3] = 255;
+      }
+    }
+    
+    return {
+      imageData: output,
+      labels: labels,
+      clusterCount: config.colorCount,
+    };
+  }
+  
+  // ========================================
+  // 🖊️ Line Mode: Simple binarization (no region classification)
+  // ========================================
+  if (mode === 'line') {
+    // Apply blur
+    let processed = imageData;
+    if (config.blurRadius > 0) {
+      processed = gaussianBlur(processed, config.blurRadius);
+    }
+    
+    // Convert to grayscale
+    processed = toGrayscale(processed);
+    
+    // Binarize with threshold
+    const threshold = config.threshold;
+    processed = binarize(processed, threshold);
+    
+    // Step 4: Extract binary data for polarity detection
+    const { width, height, data } = processed;
+    const binary = new Uint8Array(width * height);
+    for (let i = 0; i < width * height; i++) {
+      const pixelIdx = i * 4;
+      binary[i] = data[pixelIdx] < 128 ? 255 : 0; // Black pixels = 255
+    }
+    
+    // Step 5: Auto-detect polarity
+    const binaryInverted = new Uint8Array(width * height);
+    for (let i = 0; i < width * height; i++) {
+      binaryInverted[i] = binary[i] === 255 ? 0 : 255;
+    }
+    
+    const scoreOriginal = evaluateSkeletonQuality(binary, width, height);
+    const scoreInverted = evaluateSkeletonQuality(binaryInverted, width, height);
+    
+    // If inverted is better, flip the ImageData
+    if (scoreInverted > scoreOriginal) {
+      for (let i = 0; i < data.length; i += 4) {
+        const value = data[i];
+        const inverted = 255 - value;
+        data[i] = inverted;
+        data[i + 1] = inverted;
+        data[i + 2] = inverted;
+        // Alpha stays the same
+      }
+    }
+    
+    // 🎯 Line mode returns simple binary image (no labels)
+    return {
+      imageData: processed,
+    };
+  }
+  
   // For fill/mixed mode with color clustering
-  if ((mode === 'fill' || mode === 'mixed') && config.colorCount && config.colorCount > 1) {
+  if ((mode === 'fill') && config.colorCount && config.colorCount > 1) {
     // Step 1: Apply blur for noise reduction
     let processed = imageData;
     if (config.blurRadius > 0) {

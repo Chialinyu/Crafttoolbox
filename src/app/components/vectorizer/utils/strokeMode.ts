@@ -35,10 +35,7 @@ export async function processStrokeMode(
   const { data, width, height } = imageData;
   const tolerance = Math.max(0.2, (100 - precision) / 100);
   
-  console.log('🎯 STROKE MODE: Graph-based centerline extraction...');
-  
   // ========== Step 1: Preprocessing ==========
-  console.log('📐 Step 1: Gaussian blur + binary threshold...');
   const blurred = gaussianBlur(data, width, height, 1.0);
   
   const binary = new Uint8Array(width * height);
@@ -48,9 +45,7 @@ export async function processStrokeMode(
   }
   
   // ========== Step 2: Detect geometric primitives ==========
-  console.log('⭕ Step 2: Detecting circles/ellipses...');
   const closedShapes = detectClosedShapes(binary, width, height);
-  console.log(`  Found ${closedShapes.length} closed shapes`);
   
   // Process closed shapes as geometric primitives
   for (const shape of closedShapes) {
@@ -75,13 +70,10 @@ export async function processStrokeMode(
         strokeWidth,
         primitive, // 🆕 Use geometric primitive!
       });
-      
-      console.log(`  ✨ ${primitive.type === 'circle' ? 'Circle' : 'Ellipse'}: r=${avgRadius.toFixed(1)}, stroke=${strokeWidth}px`);
     }
   }
   
   // ========== Step 3: Skeleton graph for centerlines ==========
-  console.log('🦴 Step 3: Skeletonizing remaining pixels...');
   
   // Remove closed shapes from binary for skeletonization
   const binaryForSkeleton = new Uint8Array(binary);
@@ -99,23 +91,18 @@ export async function processStrokeMode(
   const distanceMap = computeDistanceTransform(binaryForSkeleton, width, height);
   
   // ========== Step 4: Build and prune skeleton graph ==========
-  console.log('📊 Step 4: Building skeleton graph...');
   const graph = buildSkeletonGraph(skeletonRaw, width, height, distanceMap);
   
-  console.log('🌿 Step 5: Pruning short branches...');
   // 🆕 Dynamic threshold: 0.3% of image diagonal
   const imageDiagonal = Math.sqrt(width * width + height * height);
   const minSpurLength = Math.max(2, Math.round(imageDiagonal * 0.003));
-  console.log(`   minSpurLength = ${minSpurLength}px (0.3% of ${imageDiagonal.toFixed(0)}px diagonal)`);
   const prunedGraph = pruneSkeletonGraph(graph, minSpurLength);
   
   // Convert back to skeleton
   const prunedSkeleton = graphToSkeleton(prunedGraph, width, height);
   
   // ========== Step 6: Trace centerlines ==========
-  console.log('🎨 Step 6: Tracing centerlines...');
   const skeletonPaths = traceSkeletonPaths(prunedSkeleton, width, height);
-  console.log(`  Found ${skeletonPaths.length} centerlines`);
   
   // Process centerlines
   for (const skPath of skeletonPaths) {
@@ -163,8 +150,6 @@ export async function processStrokeMode(
       strokeWidth: Math.max(2, Math.round(avgWidth)),
     });
   }
-  
-  console.log(`✅ Stroke mode complete: ${paths.length} total paths (${closedShapes.length} primitives + ${skeletonPaths.length} centerlines)`);
   
   return paths;
 }
