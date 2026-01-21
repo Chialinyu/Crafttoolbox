@@ -36,6 +36,7 @@
  */
 
 import { CLUSTER_LABELS } from '../constants';
+import { evaluateSkeletonQuality } from './skeletonGraph';
 
 /**
  * Convert image to grayscale
@@ -522,6 +523,39 @@ export function preprocessImage(
   
   // Step 4: Binarize
   processed = binarize(processed, threshold);
+  
+  // Step 5: 🎯 AUTO-DETECT and invert if needed (only for line mode)
+  if (mode === 'line') {
+    const { width, height, data } = processed;
+    
+    // Extract binary data for evaluation
+    const binary = new Uint8Array(width * height);
+    for (let i = 0; i < width * height; i++) {
+      const pixelIdx = i * 4;
+      binary[i] = data[pixelIdx] < 128 ? 255 : 0; // Black pixels = 255
+    }
+    
+    // Test both polarities
+    const binaryInverted = new Uint8Array(width * height);
+    for (let i = 0; i < width * height; i++) {
+      binaryInverted[i] = binary[i] === 255 ? 0 : 255;
+    }
+    
+    const scoreOriginal = evaluateSkeletonQuality(binary, width, height);
+    const scoreInverted = evaluateSkeletonQuality(binaryInverted, width, height);
+    
+    // If inverted is better, flip the ImageData
+    if (scoreInverted > scoreOriginal) {
+      for (let i = 0; i < data.length; i += 4) {
+        const value = data[i];
+        const inverted = 255 - value;
+        data[i] = inverted;
+        data[i + 1] = inverted;
+        data[i + 2] = inverted;
+        // Alpha stays the same
+      }
+    }
+  }
   
   // 🎯 Line mode doesn't need labels
   return {

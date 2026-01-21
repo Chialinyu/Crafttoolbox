@@ -932,7 +932,7 @@ export async function vectorizeImage(
       // Step 0: Gaussian blur preprocessing
       const blurred = gaussianBlur(data, width, height, 1.0);
       
-      // Convert to binary
+      // Convert to binary (color auto-detection already done in preprocessing)
       const binary = new Uint8Array(width * height);
       for (let i = 0; i < width * height; i++) {
         const pixelIdx = i * 4;

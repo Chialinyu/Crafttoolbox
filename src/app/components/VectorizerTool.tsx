@@ -953,10 +953,20 @@ export const VectorizerTool: React.FC<VectorizerToolProps> = ({ onBack }) => {
                   <Button 
                     onClick={editingStep === 2 ? () => handleConfirmEdit(2) : handleConfirmMode} 
                     className="flex-1"
+                    disabled={isGeneratingModePreview}
                   >
                     <span className="flex items-center gap-2">
-                      <ChevronRight className="h-4 w-4" />
-                      {t('confirmMode')}
+                      {isGeneratingModePreview ? (
+                        <>
+                          <div className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
+                          {t('processing')}
+                        </>
+                      ) : (
+                        <>
+                          <ChevronRight className="h-4 w-4" />
+                          {t('confirmMode')}
+                        </>
+                      )}
                     </span>
                   </Button>
                 </div>

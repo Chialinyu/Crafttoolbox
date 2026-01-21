@@ -215,6 +215,189 @@ export function graphToSkeleton(
   return skeleton;
 }
 
+/**
+ * ============================================================================
+ * SKELETON QUALITY EVALUATION - Auto-detect correct polarity
+ * ============================================================================
+ * 
+ * Evaluates how "line-like" a binary image is by trying skeletonization.
+ * Used to auto-detect whether lines are black-on-white or white-on-black.
+ * 
+ * Quality Score Factors:
+ * 1. Skeleton density (1-10% is ideal for line art)
+ * 2. Average path continuity (longer paths = better)
+ * 3. Branch density (moderate branching is good)
+ * 4. Border contact (lines shouldn't touch edges much)
+ */
+export function evaluateSkeletonQuality(
+  binary: Uint8Array,
+  width: number,
+  height: number
+): number {
+  // Count foreground pixels
+  let fgCount = 0;
+  for (let i = 0; i < binary.length; i++) {
+    if (binary[i] > 0) fgCount++;
+  }
+  
+  const totalPixels = width * height;
+  const fgRatio = fgCount / totalPixels;
+  
+  // ❌ Too sparse or too dense → probably wrong polarity
+  if (fgRatio < 0.01 || fgRatio > 0.5) {
+    return 0;
+  }
+  
+  // Quick skeletonization test
+  const skeleton = zhangSuenThinningFast(binary, width, height);
+  
+  // Count skeleton pixels
+  let skeletonCount = 0;
+  for (let i = 0; i < skeleton.length; i++) {
+    if (skeleton[i] > 0) skeletonCount++;
+  }
+  
+  const skeletonRatio = skeletonCount / fgCount;
+  
+  // ✅ Good skeleton: 5-30% of foreground becomes skeleton
+  let score = 0;
+  
+  // Factor 1: Skeleton density (ideal: 10-20%)
+  if (skeletonRatio >= 0.05 && skeletonRatio <= 0.3) {
+    score += 50;
+  } else if (skeletonRatio >= 0.03 && skeletonRatio <= 0.5) {
+    score += 20;
+  }
+  
+  // Factor 2: Border contact (lines shouldn't touch edges much)
+  let borderPixels = 0;
+  for (let x = 0; x < width; x++) {
+    if (skeleton[x] > 0) borderPixels++; // Top
+    if (skeleton[(height - 1) * width + x] > 0) borderPixels++; // Bottom
+  }
+  for (let y = 0; y < height; y++) {
+    if (skeleton[y * width] > 0) borderPixels++; // Left
+    if (skeleton[y * width + (width - 1)] > 0) borderPixels++; // Right
+  }
+  const borderRatio = borderPixels / Math.max(skeletonCount, 1);
+  if (borderRatio < 0.1) {
+    score += 30; // Lines don't touch edges much = good
+  } else if (borderRatio < 0.3) {
+    score += 10;
+  }
+  
+  // Factor 3: Connectivity (count connected components)
+  const components = countConnectedComponents(skeleton, width, height);
+  const avgComponentSize = skeletonCount / Math.max(components, 1);
+  
+  // Good line art: moderate number of components, not too fragmented
+  if (components > 0 && components < skeletonCount / 3) {
+    score += 20;
+  }
+  
+  return score;
+}
+
+/**
+ * Fast Zhang-Suen thinning (2 iterations only for speed)
+ */
+function zhangSuenThinningFast(
+  binary: Uint8Array,
+  width: number,
+  height: number
+): Uint8Array {
+  const result = new Uint8Array(binary);
+  
+  // Only 2 iterations for speed (enough for quality estimation)
+  for (let iter = 0; iter < 2; iter++) {
+    const toDelete: number[] = [];
+    
+    // Sub-iteration 1
+    for (let y = 1; y < height - 1; y++) {
+      for (let x = 1; x < width - 1; x++) {
+        const idx = y * width + x;
+        if (result[idx] === 0) continue;
+        
+        const p2 = result[(y - 1) * width + x] > 0 ? 1 : 0;
+        const p3 = result[(y - 1) * width + (x + 1)] > 0 ? 1 : 0;
+        const p4 = result[y * width + (x + 1)] > 0 ? 1 : 0;
+        const p5 = result[(y + 1) * width + (x + 1)] > 0 ? 1 : 0;
+        const p6 = result[(y + 1) * width + x] > 0 ? 1 : 0;
+        const p7 = result[(y + 1) * width + (x - 1)] > 0 ? 1 : 0;
+        const p8 = result[y * width + (x - 1)] > 0 ? 1 : 0;
+        const p9 = result[(y - 1) * width + (x - 1)] > 0 ? 1 : 0;
+        
+        const neighbors = [p2, p3, p4, p5, p6, p7, p8, p9];
+        const B = neighbors.reduce((a, b) => a + b, 0);
+        
+        let A = 0;
+        for (let i = 0; i < 8; i++) {
+          if (neighbors[i] === 0 && neighbors[(i + 1) % 8] === 1) A++;
+        }
+        
+        if (B >= 2 && B <= 6 && A === 1 &&
+            p2 * p4 * p6 === 0 && p4 * p6 * p8 === 0) {
+          toDelete.push(idx);
+        }
+      }
+    }
+    
+    for (const idx of toDelete) {
+      result[idx] = 0;
+    }
+  }
+  
+  return result;
+}
+
+/**
+ * Count connected components (simple flood-fill)
+ */
+function countConnectedComponents(
+  skeleton: Uint8Array,
+  width: number,
+  height: number
+): number {
+  const visited = new Uint8Array(width * height);
+  let count = 0;
+  
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const idx = y * width + x;
+      if (skeleton[idx] > 0 && visited[idx] === 0) {
+        // Flood fill
+        const queue: number[] = [idx];
+        visited[idx] = 1;
+        
+        while (queue.length > 0) {
+          const current = queue.shift()!;
+          const cy = Math.floor(current / width);
+          const cx = current % width;
+          
+          for (let dy = -1; dy <= 1; dy++) {
+            for (let dx = -1; dx <= 1; dx++) {
+              if (dx === 0 && dy === 0) continue;
+              const ny = cy + dy;
+              const nx = cx + dx;
+              if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
+                const nidx = ny * width + nx;
+                if (skeleton[nidx] > 0 && visited[nidx] === 0) {
+                  visited[nidx] = 1;
+                  queue.push(nidx);
+                }
+              }
+            }
+          }
+        }
+        
+        count++;
+      }
+    }
+  }
+  
+  return count;
+}
+
 // ============================================================================
 // Helper functions
 // ============================================================================
@@ -351,7 +534,10 @@ function traceEdge(
   nodeMap: Map<number, number>
 ): { pixels: Array<{ x: number; y: number }>; endNodeId?: number } {
   const pixels: Array<{ x: number; y: number }> = [];
-  const visited = new Set<number>(); // 🔥 Track visited pixels to prevent infinite loops
+  const visited = new Set<number>(); // Track visited pixels to prevent infinite loops
+  
+  // Dynamic limit based on image size (allow up to 50% of image diagonal)
+  const maxPixels = Math.floor(Math.sqrt(width * width + height * height) * 0.5);
   
   let x = startX;
   let y = startY;
@@ -361,9 +547,8 @@ function traceEdge(
   while (true) {
     const idx = y * width + x;
     
-    // 🔥 Check if we're in a loop
+    // Check if we're in a loop
     if (visited.has(idx)) {
-      console.warn('⚠️ Edge trace detected loop, stopping');
       return { pixels };
     }
     
@@ -383,7 +568,7 @@ function traceEdge(
     for (const n of neighbors) {
       if (n.x === px && n.y === py) continue; // Skip previous
       const nidx = n.y * width + n.x;
-      if (visited.has(nidx)) continue; // 🔥 Skip already visited pixels
+      if (visited.has(nidx)) continue; // Skip already visited pixels
       nextX = n.x;
       nextY = n.y;
       break;
@@ -400,9 +585,8 @@ function traceEdge(
     x = nextX;
     y = nextY;
     
-    // Safety check (should never hit this now)
-    if (pixels.length > 10000) {
-      console.warn('⚠️ Edge trace exceeded 10000 pixels, stopping');
+    // Safety check with dynamic limit
+    if (pixels.length > maxPixels) {
       return { pixels };
     }
   }
