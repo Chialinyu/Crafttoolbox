@@ -2571,7 +2571,7 @@ export function simplifyPath(points: Point[], tolerance: number): Point[] {
 
 /**
  * Generate SVG string from vector paths
- * 🔧 CRITICAL FIX: Use fill-rule="nonzero" to prevent evenodd punch-out effect
+ * 🎨 Uses fill-rule="evenodd" for proper nested path rendering (holes are transparent)
  */
 export function generateSVG(
   paths: VectorPath[],
@@ -2613,8 +2613,8 @@ export function generateSVG(
       if (path.type === 'stroke') {
         svg += `  <path d="${d}" fill="none" stroke="${stroke}" stroke-width="${strokeWidth}" stroke-linecap="round" stroke-linejoin="round" />\n`;
       } else {
-        // Fill mode: use fill-rule="nonzero" to prevent punch-out
-        svg += `  <path d="${d}" fill="${fill}" stroke="none" fill-rule="nonzero" />\n`;
+        // Fill mode: use fill-rule="evenodd" for proper hole rendering
+        svg += `  <path d="${d}" fill="${fill}" stroke="none" fill-rule="evenodd" />\n`;
       }
     }
   }

@@ -558,6 +558,7 @@ export const SVGCanvas = forwardRef<SVGCanvasRef, SVGCanvasProps>(({
                         key={index}
                         d={path.svgPath || pointsToSVGPath(path.points, path.closed)}
                         fill={path.type === 'fill' ? (path.color || '#E8B4B8') : 'none'}
+                        fillRule="evenodd"
                         stroke={strokeColor}
                         strokeWidth={strokeWidth}
                         strokeLinecap="round"

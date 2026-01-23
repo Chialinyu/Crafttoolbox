@@ -400,6 +400,7 @@ function renderMiniPath(path: VectorPath): JSX.Element {
         <path
           d={path.svgPath}
           fill={path.type === 'fill' ? path.color : 'none'}
+          fillRule="evenodd"
           stroke={path.type === 'stroke' ? (path.color || '#000000') : (path.type === 'fill' ? path.color : '#000000')}
           strokeWidth={actualStrokeWidth}
           strokeLinecap="round"
@@ -478,6 +479,7 @@ function renderPathFromPoints(path: VectorPath): JSX.Element {
       <path
         d={pathData}
         fill={path.type === 'fill' ? path.color : 'none'}
+        fillRule="evenodd"
         stroke={path.type === 'stroke' ? (path.color || '#000000') : (path.type === 'fill' ? (path.color || '#000000') : '#000000')}
         strokeWidth={path.type === 'stroke' ? Math.max(1, Math.max(width, height) * 0.03) : 1}
         strokeLinecap="round"
