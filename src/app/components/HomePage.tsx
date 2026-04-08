@@ -5,8 +5,8 @@ import { Input } from './ui/input';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card';
 import { motion } from 'motion/react';
 import { trackToolUsage } from '@/utils/analytics';
-import mosaicCoverImage from 'figma:asset/4c8c8c444f1a5c2f669857a0cf97d9b4e297969c.png';
-import vectorizerCoverImage from 'figma:asset/26dbf5422d730b30c7e811c79eb16feb1ffe0331.png';
+import mosaicCoverImage from '@/assets/4c8c8c444f1a5c2f669857a0cf97d9b4e297969c.png';
+import vectorizerCoverImage from '@/assets/26dbf5422d730b30c7e811c79eb16feb1ffe0331.png';
 
 interface Tool {
   id: string;
