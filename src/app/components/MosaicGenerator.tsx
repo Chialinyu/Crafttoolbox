@@ -58,6 +58,58 @@ interface MosaicGeneratorProps {
   onBack: () => void;
 }
 
+const configureSamplingContext = (ctx: CanvasRenderingContext2D) => {
+  // Keep nearest-neighbor sampling to reduce browser-specific resampling differences.
+  ctx.imageSmoothingEnabled = false;
+};
+
+const sampleImageToTileGrid = (
+  image: HTMLImageElement,
+  tilesX: number,
+  tilesY: number
+): ImageData | null => {
+  const sourceWidth = image.naturalWidth || image.width;
+  const sourceHeight = image.naturalHeight || image.height;
+  if (sourceWidth <= 0 || sourceHeight <= 0 || tilesX <= 0 || tilesY <= 0) {
+    return null;
+  }
+
+  const sourceCanvas = document.createElement('canvas');
+  sourceCanvas.width = sourceWidth;
+  sourceCanvas.height = sourceHeight;
+  const sourceCtx = sourceCanvas.getContext('2d', { willReadFrequently: true });
+  if (!sourceCtx) return null;
+
+  configureSamplingContext(sourceCtx);
+  sourceCtx.drawImage(image, 0, 0, sourceWidth, sourceHeight);
+  const sourceData = sourceCtx.getImageData(0, 0, sourceWidth, sourceHeight).data;
+
+  const sampled = new Uint8ClampedArray(tilesX * tilesY * 4);
+
+  for (let ty = 0; ty < tilesY; ty++) {
+    for (let tx = 0; tx < tilesX; tx++) {
+      // Use tile center sampling for deterministic and sharper color extraction.
+      const sx = Math.min(
+        sourceWidth - 1,
+        Math.max(0, Math.floor(((tx + 0.5) * sourceWidth) / tilesX))
+      );
+      const sy = Math.min(
+        sourceHeight - 1,
+        Math.max(0, Math.floor(((ty + 0.5) * sourceHeight) / tilesY))
+      );
+
+      const src = (sy * sourceWidth + sx) * 4;
+      const dst = (ty * tilesX + tx) * 4;
+      sampled[dst] = sourceData[src];
+      sampled[dst + 1] = sourceData[src + 1];
+      sampled[dst + 2] = sourceData[src + 2];
+      sampled[dst + 3] = sourceData[src + 3];
+    }
+  }
+
+  return new ImageData(sampled, tilesX, tilesY);
+};
+
 export const MosaicGenerator: React.FC<MosaicGeneratorProps> = ({ onBack }) => {
   const { t } = useLanguage();
   const { viewportHeight, stickyTop } = useViewportHeight();
@@ -109,7 +161,6 @@ export const MosaicGenerator: React.FC<MosaicGeneratorProps> = ({ onBack }) => {
 
   const [isGenerating, setIsGenerating] = useState(false);
   const [imageChanged, setImageChanged] = useState(false);
-
   const { addToHistory, undo, redo, resetHistory, canUndo, canRedo } = useMosaicHistory();
 
   // Define updateColorStats FIRST (before applyStateFromHistory uses it)
@@ -203,11 +254,8 @@ export const MosaicGenerator: React.FC<MosaicGeneratorProps> = ({ onBack }) => {
     const tempCanvas = document.createElement('canvas');
     tempCanvas.width = tilesX;
     tempCanvas.height = tilesY;
-    const tempCtx = tempCanvas.getContext('2d');
-    if (!tempCtx) return currentPalette;
-
-    tempCtx.drawImage(image, 0, 0, tilesX, tilesY);
-    const imageData = tempCtx.getImageData(0, 0, tilesX, tilesY);
+    const imageData = sampleImageToTileGrid(image, tilesX, tilesY);
+    if (!imageData) return currentPalette;
 
     // Extract more colors from image
     const extraColorsNeeded = targetCount - currentPalette.length;
@@ -381,16 +429,9 @@ export const MosaicGenerator: React.FC<MosaicGeneratorProps> = ({ onBack }) => {
 
     const tilesX = overrideWidth ?? mosaicWidth;
     const tilesY = overrideHeight ?? mosaicHeight;
-
     // Resample image to mosaic dimensions
-    const tempCanvas = document.createElement('canvas');
-    tempCanvas.width = tilesX;
-    tempCanvas.height = tilesY;
-    const tempCtx = tempCanvas.getContext('2d');
-    if (!tempCtx) return;
-
-    tempCtx.drawImage(image, 0, 0, tilesX, tilesY);
-    const rawImageData = tempCtx.getImageData(0, 0, tilesX, tilesY);
+    const rawImageData = sampleImageToTileGrid(image, tilesX, tilesY);
+    if (!rawImageData) return;
 
     // Process transparency: extract transparent pixels and composite semi-transparent ones
     const { imageData, transparentMask } = processImageDataForTransparency(rawImageData);
@@ -399,7 +440,6 @@ export const MosaicGenerator: React.FC<MosaicGeneratorProps> = ({ onBack }) => {
     const generatedPalette = quantizeColors(imageData, numColors);
     const { uniqueColors: dedupedColors, mapping: dedupeMapping } = deduplicatePalette(generatedPalette);
     const { reducedColors: finalPalette, mapping: reduceMapping } = reducePalette(dedupedColors, numColors);
-
     // Create tile color map
     const newColorMap: number[][] = [];
 
@@ -561,17 +601,8 @@ export const MosaicGenerator: React.FC<MosaicGeneratorProps> = ({ onBack }) => {
     const tilesX = mosaicWidth;
     const tilesY = mosaicHeight;
     
-    const tempCanvas = document.createElement('canvas');
-    tempCanvas.width = tilesX;
-    tempCanvas.height = tilesY;
-    const tempCtx = tempCanvas.getContext('2d');
-    
-    if (!tempCtx) {
-      return;
-    }
-
-    tempCtx.drawImage(image, 0, 0, tilesX, tilesY);
-    const imageData = tempCtx.getImageData(0, 0, tilesX, tilesY);
+    const imageData = sampleImageToTileGrid(image, tilesX, tilesY);
+    if (!imageData) return;
 
     const newColorMap: number[][] = [];
     for (let y = 0; y < tilesY; y++) {
@@ -628,7 +659,6 @@ export const MosaicGenerator: React.FC<MosaicGeneratorProps> = ({ onBack }) => {
           // Ensure minimum 20 tiles on each side
           const finalWidth = Math.max(20, targetWidth);
           const finalHeight = Math.max(20, targetHeight);
-          
           // Store dimensions in ref for useEffect to use
           pendingDimensionsRef.current = { width: finalWidth, height: finalHeight };
           
@@ -1239,14 +1269,9 @@ export const MosaicGenerator: React.FC<MosaicGeneratorProps> = ({ onBack }) => {
     const tilesX = newWidth;
     const tilesY = newHeight;
     
-    const tempCanvas = document.createElement('canvas');
-    tempCanvas.width = tilesX;
-    tempCanvas.height = tilesY;
-    const tempCtx = tempCanvas.getContext('2d');
+    const rawImageData = sampleImageToTileGrid(image, tilesX, tilesY);
     
-    if (tempCtx) {
-      tempCtx.drawImage(image, 0, 0, tilesX, tilesY);
-      const rawImageData = tempCtx.getImageData(0, 0, tilesX, tilesY);
+    if (rawImageData) {
 
       // Process transparency
       const { imageData, transparentMask } = processImageDataForTransparency(rawImageData);

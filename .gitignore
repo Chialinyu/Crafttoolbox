@@ -1,0 +1,21 @@
+# Dependencies
+node_modules/
+
+# Production build
+dist/
+
+# Local / OS
+.DS_Store
+Thumbs.db
+
+# Cursor (local debug, MCP cache paths — not part of the app)
+.cursor/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+npm-debug.log*

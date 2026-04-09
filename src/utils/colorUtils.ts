@@ -110,56 +110,112 @@ export const quantizeColors = (
   imageData: ImageData,
   targetNumColors: number
 ): string[] => {
-  // Extract all pixels as [r, g, b] arrays
+  if (targetNumColors <= 0) return [];
+
+  // Extract all pixels as [r, g, b] arrays and track global frequency
   const pixels: [number, number, number][] = [];
+  const globalFrequency = new Map<string, number>();
   for (let i = 0; i < imageData.data.length; i += 4) {
-    pixels.push([
+    const pixel: [number, number, number] = [
       imageData.data[i],
       imageData.data[i + 1],
       imageData.data[i + 2]
-    ]);
+    ];
+    pixels.push(pixel);
+    const key = `${pixel[0]},${pixel[1]},${pixel[2]}`;
+    globalFrequency.set(key, (globalFrequency.get(key) ?? 0) + 1);
   }
 
-  /**
-   * Recursive median cut function
-   * Splits color space into buckets and averages each bucket
-   */
-  const medianCut = (
-    pixelList: [number, number, number][],
-    depth: number
-  ): string[] => {
-    if (depth === 0 || pixelList.length === 0) {
-      // Calculate average color for this bucket
-      const sum = pixelList.reduce(
-        (acc, pixel) => [acc[0] + pixel[0], acc[1] + pixel[1], acc[2] + pixel[2]],
-        [0, 0, 0]
-      );
-      const len = pixelList.length || 1;
-      return [
-        `rgb(${Math.round(sum[0] / len)}, ${Math.round(sum[1] / len)}, ${Math.round(sum[2] / len)})`
-      ];
-    }
+  if (pixels.length === 0) return [];
 
-    // Find the channel with the largest range
-    const ranges = [0, 1, 2].map(channel => {
-      const values = pixelList.map(p => p[channel]);
-      return Math.max(...values) - Math.min(...values);
-    });
-
-    const maxChannel = ranges.indexOf(Math.max(...ranges));
-    
-    // Sort by the channel with largest range
-    pixelList.sort((a, b) => a[maxChannel] - b[maxChannel]);
-
-    // Split at median
-    const mid = Math.floor(pixelList.length / 2);
-    return [
-      ...medianCut(pixelList.slice(0, mid), depth - 1),
-      ...medianCut(pixelList.slice(mid), depth - 1)
-    ];
+  const toRgb = (key: string) => {
+    const [r, g, b] = key.split(',').map(Number);
+    return `rgb(${r}, ${g}, ${b})`;
   };
 
-  return medianCut(pixels, Math.ceil(Math.log2(targetNumColors)));
+  const dominantGlobal = Array.from(globalFrequency.entries())
+    .sort((a, b) => b[1] - a[1])
+    .map(([key]) => key);
+
+  if (globalFrequency.size <= targetNumColors) {
+    return dominantGlobal.slice(0, targetNumColors).map(toRgb);
+  }
+
+  const channelRange = (bucket: [number, number, number][]) => {
+    const ranges = [0, 1, 2].map((channel) => {
+      let min = 255;
+      let max = 0;
+      for (let i = 0; i < bucket.length; i++) {
+        const value = bucket[i][channel];
+        if (value < min) min = value;
+        if (value > max) max = value;
+      }
+      return max - min;
+    });
+    const maxRange = Math.max(...ranges);
+    return {
+      maxRange,
+      maxChannel: ranges.indexOf(maxRange),
+    };
+  };
+
+  const buckets: [number, number, number][][] = [pixels];
+  while (buckets.length < targetNumColors) {
+    let bestIndex = -1;
+    let bestRange = -1;
+    let splitChannel = 0;
+
+    for (let i = 0; i < buckets.length; i++) {
+      const bucket = buckets[i];
+      if (bucket.length <= 1) continue;
+      const { maxRange, maxChannel: channel } = channelRange(bucket);
+      if (maxRange > bestRange) {
+        bestRange = maxRange;
+        bestIndex = i;
+        splitChannel = channel;
+      }
+    }
+
+    if (bestIndex === -1) break;
+
+    const bucket = buckets[bestIndex];
+    bucket.sort((a, b) => a[splitChannel] - b[splitChannel]);
+    const mid = Math.floor(bucket.length / 2);
+    const left = bucket.slice(0, mid);
+    const right = bucket.slice(mid);
+    if (left.length === 0 || right.length === 0) break;
+    buckets.splice(bestIndex, 1, left, right);
+  }
+
+  const chosenKeys: string[] = [];
+  const used = new Set<string>();
+
+  // Pick representative colors that actually exist in the image (mode per bucket).
+  buckets.forEach((bucket) => {
+    const localFrequency = new Map<string, number>();
+    for (let i = 0; i < bucket.length; i++) {
+      const key = `${bucket[i][0]},${bucket[i][1]},${bucket[i][2]}`;
+      localFrequency.set(key, (localFrequency.get(key) ?? 0) + 1);
+    }
+    const candidates = Array.from(localFrequency.entries())
+      .sort((a, b) => b[1] - a[1])
+      .map(([key]) => key);
+    const uniqueCandidate = candidates.find((key) => !used.has(key)) ?? candidates[0];
+    if (uniqueCandidate && !used.has(uniqueCandidate)) {
+      used.add(uniqueCandidate);
+      chosenKeys.push(uniqueCandidate);
+    }
+  });
+
+  for (let i = 0; i < dominantGlobal.length && chosenKeys.length < targetNumColors; i++) {
+    const key = dominantGlobal[i];
+    if (!used.has(key)) {
+      used.add(key);
+      chosenKeys.push(key);
+    }
+  }
+
+  return chosenKeys.slice(0, targetNumColors).map(toRgb);
 };
 
 /**

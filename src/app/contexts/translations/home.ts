@@ -13,4 +13,5 @@ export const homeTranslations = {
   textile: { zh: '織品手作', en: 'Textile Crafts' },
   paperCraft: { zh: '紙藝', en: 'Paper Crafts' },
   painting: { zh: '繪畫', en: 'Painting' },
+
 };

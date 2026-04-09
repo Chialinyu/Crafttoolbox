@@ -85,6 +85,16 @@ export const MosaicCanvas = forwardRef<MosaicCanvasHandle, MosaicCanvasProps>(({
   const [lastMousePos, setLastMousePos] = useState({ x: 0, y: 0 });
   const [hoveredTile, setHoveredTile] = useState<{ x: number; y: number } | null>(null);
 
+  const getCanvasDpr = () => {
+    if (typeof window === 'undefined') return 1;
+    return Math.max(1, window.devicePixelRatio || 1);
+  };
+
+  const quantizeDisplayScale = (scale: number) => {
+    const step = 0.05;
+    return Math.max(step, Math.round(scale / step) * step);
+  };
+
   /**
    * Draw the mosaic on canvas
    */
@@ -94,13 +104,18 @@ export const MosaicCanvas = forwardRef<MosaicCanvasHandle, MosaicCanvasProps>(({
     
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
+    const dpr = getCanvasDpr();
+    const logicalCanvasWidth = canvas.width / dpr;
+    const logicalCanvasHeight = canvas.height / dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.imageSmoothingEnabled = false;
 
     // Calculate dimensions
     const { offsetX, offsetY } = calculateOffsets(borderEnabled, borderWidth);
     
     // Clear and redraw background with SPACING COLOR (not backgroundColor)
     ctx.fillStyle = spacingColor;
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillRect(0, 0, logicalCanvasWidth, logicalCanvasHeight);
 
     // Determine active color group (hover takes precedence)
     const activeColorGroup = hoveredColorGroup !== null ? hoveredColorGroup : selectedColorGroup;
@@ -175,7 +190,12 @@ export const MosaicCanvas = forwardRef<MosaicCanvasHandle, MosaicCanvasProps>(({
     if (borderEnabled) {
       ctx.strokeStyle = borderColor;
       ctx.lineWidth = borderWidth;
-      ctx.strokeRect(borderWidth / 2, borderWidth / 2, canvas.width - borderWidth, canvas.height - borderWidth);
+      ctx.strokeRect(
+        borderWidth / 2,
+        borderWidth / 2,
+        logicalCanvasWidth - borderWidth,
+        logicalCanvasHeight - borderWidth
+      );
     }
 
     // Draw hover indicator (orange border on hovered tile)
@@ -194,20 +214,8 @@ export const MosaicCanvas = forwardRef<MosaicCanvasHandle, MosaicCanvasProps>(({
       ctx.strokeRect(px, py, tileSize, tileSize);
     }
 
-    // 🎯 Auto-scale canvas to fit container (original feature)
-    if (containerRef.current) {
-      const containerWidth = containerRef.current.clientWidth;
-      const containerHeight = containerRef.current.clientHeight;
-      
-      // Calculate scale to fit container with padding
-      const scaleX = (containerWidth - 80) / canvas.width;
-      const scaleY = (containerHeight - 80) / canvas.height;
-      const scale = Math.min(scaleX, scaleY, 1); // Don't scale up, only down
-      
-      // Apply auto-scaling via CSS
-      canvas.style.width = `${canvas.width * scale}px`;
-      canvas.style.height = `${canvas.height * scale}px`;
-    }
+    canvas.style.setProperty('image-rendering', 'pixelated');
+    canvas.style.setProperty('image-rendering', 'crisp-edges');
   }, [
     colorMap,
     palette,
@@ -232,7 +240,9 @@ export const MosaicCanvas = forwardRef<MosaicCanvasHandle, MosaicCanvasProps>(({
   const handleCanvasClick = (event: React.MouseEvent<HTMLCanvasElement>) => {
     event.stopPropagation(); // Prevent triggering handleOutsideClick
     
-    if (!onClick || !canvasRef.current || !containerRef.current) return;
+    if (!onClick || !canvasRef.current || !containerRef.current) {
+      return;
+    }
 
     const canvas = canvasRef.current;
     const container = containerRef.current;
@@ -247,9 +257,12 @@ export const MosaicCanvas = forwardRef<MosaicCanvasHandle, MosaicCanvasProps>(({
     const canvasX = event.clientX - canvasRect.left;
     const canvasY = event.clientY - canvasRect.top;
     
-    // Convert to canvas coordinates (considering CSS scaling)
-    const scaleX = canvas.width / canvasRect.width;
-    const scaleY = canvas.height / canvasRect.height;
+    // Convert pointer coords into logical canvas coords.
+    // Use DPR-normalized size to avoid double-counting DPR when canvas is CSS-scaled.
+    const logicalCanvasWidth = canvas.width / getCanvasDpr();
+    const logicalCanvasHeight = canvas.height / getCanvasDpr();
+    const scaleX = logicalCanvasWidth / canvasRect.width;
+    const scaleY = logicalCanvasHeight / canvasRect.height;
     const x = canvasX * scaleX;
     const y = canvasY * scaleY;
 
@@ -258,7 +271,6 @@ export const MosaicCanvas = forwardRef<MosaicCanvasHandle, MosaicCanvasProps>(({
     // Calculate clicked tile position
     const tileX = Math.floor((x - offsetX) / (tileSize + tileSpacing));
     const tileY = Math.floor((y - offsetY) / (tileSize + tileSpacing));
-
     if (tileX >= 0 && tileX < mosaicWidth && tileY >= 0 && tileY < mosaicHeight) {
       onClick(tileX, tileY);
     }
@@ -275,9 +287,12 @@ export const MosaicCanvas = forwardRef<MosaicCanvasHandle, MosaicCanvasProps>(({
     const canvasX = event.clientX - canvasRect.left;
     const canvasY = event.clientY - canvasRect.top;
     
-    // Convert to canvas coordinates (considering CSS scaling)
-    const scaleX = canvas.width / canvasRect.width;
-    const scaleY = canvas.height / canvasRect.height;
+    // Convert pointer coords into logical canvas coords.
+    // Keep hover mapping consistent with click mapping.
+    const logicalCanvasWidth = canvas.width / getCanvasDpr();
+    const logicalCanvasHeight = canvas.height / getCanvasDpr();
+    const scaleX = logicalCanvasWidth / canvasRect.width;
+    const scaleY = logicalCanvasHeight / canvasRect.height;
     const x = canvasX * scaleX;
     const y = canvasY * scaleY;
 
@@ -313,8 +328,23 @@ export const MosaicCanvas = forwardRef<MosaicCanvasHandle, MosaicCanvasProps>(({
   };
 
   const handleFitToScreen = () => {
-    // Reset zoom to 1 because CSS auto-scaling handles the fit
-    setZoom(1);
+    const canvas = canvasRef.current;
+    const container = containerRef.current;
+    if (!canvas || !container) {
+      setZoom(1);
+      setPan({ x: 0, y: 0 });
+      return;
+    }
+
+    const dpr = getCanvasDpr();
+    const logicalCanvasWidth = canvas.width / dpr;
+    const logicalCanvasHeight = canvas.height / dpr;
+    const containerWidth = container.clientWidth;
+    const containerHeight = container.clientHeight;
+    const fitX = (containerWidth - 80) / logicalCanvasWidth;
+    const fitY = (containerHeight - 80) / logicalCanvasHeight;
+    const fitScale = quantizeDisplayScale(Math.min(fitX, fitY, 1));
+    setZoom(fitScale);
     setPan({ x: 0, y: 0 });
   };
 
@@ -400,13 +430,16 @@ export const MosaicCanvas = forwardRef<MosaicCanvasHandle, MosaicCanvasProps>(({
       borderWidth
     );
 
-    canvas.width = width;
-    canvas.height = height;
+    const dpr = getCanvasDpr();
+    canvas.width = Math.round(width * dpr);
+    canvas.height = Math.round(height * dpr);
+    canvas.style.width = `${width}px`;
+    canvas.style.height = `${height}px`;
     
     // 🔥 CRITICAL: Force redraw immediately after canvas size changes
     // This fixes the bug where new images show old dimensions (e.g., 14x7 instead of 40x40)
     drawMosaic();
-  }, [mosaicWidth, mosaicHeight, tileSize, tileSpacing, borderEnabled, borderWidth, drawMosaic]);
+  }, [mosaicWidth, mosaicHeight, tileSize, tileSpacing, borderEnabled, borderWidth, drawMosaic, hasImage]);
 
   /**
    * Fit to screen only when new image is loaded (mosaicWidth/Height change)
@@ -419,7 +452,7 @@ export const MosaicCanvas = forwardRef<MosaicCanvasHandle, MosaicCanvasProps>(({
       });
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mosaicWidth, mosaicHeight]);
+  }, [mosaicWidth, mosaicHeight, hasImage]);
 
   /**
    * Redraw when any parameter changes

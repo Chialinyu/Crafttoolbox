@@ -2,7 +2,7 @@ import { useState, Suspense, useEffect } from 'react';
 import { LanguageProvider } from './contexts/LanguageContext';
 import { Header } from './components/Header';
 import { HomePage } from './components/HomePage';
-import { MosaicGenerator } from './components/MosaicGeneratorV2';
+import { MosaicGenerator } from './components/MosaicGenerator';
 import { VectorizerTool } from './components/VectorizerTool';
 import { Footer } from './components/Footer';
 import { Toaster } from './components/ui/sonner';
@@ -29,7 +29,9 @@ function App() {
   useEffect(() => {
     const pagePath = currentTool ? `/tool/${currentTool}` : '/';
     const pageTitle = currentTool 
-      ? currentTool === 'mosaic-generator' ? 'Mosaic Generator' : 'Vectorizer Tool'
+      ? currentTool === 'mosaic-generator'
+        ? 'Mosaic Generator'
+        : 'Vectorizer Tool'
       : 'Craft ToolBox Home Page';
     trackPageView(pagePath, pageTitle);
   }, [currentTool]);
