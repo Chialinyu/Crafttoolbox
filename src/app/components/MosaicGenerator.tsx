@@ -11,7 +11,7 @@
  */
 
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { Upload, Download, Copy, ArrowLeft, Undo, Redo, RotateCcw } from 'lucide-react';
+import { Upload, Download, Copy } from 'lucide-react';
 import { useLanguage } from '../contexts/LanguageContext';
 import { useViewportHeight } from '../../hooks/useViewportHeight';
 import { motion } from 'motion/react';
@@ -21,16 +21,16 @@ import { ToolPageLayout } from './ui/ToolPageLayout';
 import { toast } from 'sonner';
 import { RadioGroup, RadioGroupItem } from './ui/radio-group';
 import { Label } from './ui/label';
-import { trackToolUsage, trackImageUpload, trackExport } from '@/utils/analytics';
+import { trackExport } from '@/utils/analytics';
 
 import {
   rgbToHex,
   hexToRgb,
   hexToRgbArray,
-  findClosestColor,
+  createLabColorMatcher,
   quantizeColors,
-  deduplicatePalette,
-  reducePalette,
+  parseColorToRgb,
+  colorDistance,
   processImageDataForTransparency,
 } from '../../utils/colorUtils';
 import { calculateOffsets, calculateCanvasSize } from '../../utils/mosaicUtils';
@@ -38,6 +38,7 @@ import { SegmentMemory } from '../../utils/segmentMemory';
 import { analyzeColorDistribution, ColorDistributionStats } from '../../utils/colorDistribution';
 
 import { useMosaicHistory } from '../../hooks/useMosaicHistory';
+import { useMosaicImageUpload } from '../../hooks/useMosaicImageUpload';
 
 import {
   MosaicCanvas,
@@ -47,6 +48,8 @@ import {
   CanvasSizePanel,
   TileSettingsPanel,
   BorderEffectsPanel,
+  DEFAULTS,
+  DEFAULT_COLORS,
 } from './mosaic';
 
 interface ColorStats {
@@ -119,16 +122,19 @@ export const MosaicGenerator: React.FC<MosaicGeneratorProps> = ({ onBack }) => {
   const colorChangeTimerRef = useRef<NodeJS.Timeout | null>(null);
   const sliderChangeTimerRef = useRef<NodeJS.Timeout | null>(null);
   const pendingDimensionsRef = useRef<{ width: number; height: number } | null>(null);
-  const prevMosaicDimensionsRef = useRef<{ width: number; height: number }>({ width: 40, height: 40 });
+  const prevMosaicDimensionsRef = useRef<{ width: number; height: number }>({
+    width: DEFAULTS.CANVAS_WIDTH,
+    height: DEFAULTS.CANVAS_HEIGHT,
+  });
   const isRestoringHistoryRef = useRef(false);
 
   const [image, setImage] = useState<HTMLImageElement | null>(null);
-  const [mosaicWidth, setMosaicWidth] = useState(40);
-  const [mosaicHeight, setMosaicHeight] = useState(40);
+  const [mosaicWidth, setMosaicWidth] = useState<number>(DEFAULTS.CANVAS_WIDTH);
+  const [mosaicHeight, setMosaicHeight] = useState<number>(DEFAULTS.CANVAS_HEIGHT);
   const [keepAspectRatio, setKeepAspectRatio] = useState(true);
 
-  const [numColors, setNumColors] = useState(8);
-  const [prevNumColors, setPrevNumColors] = useState(8);
+  const [numColors, setNumColors] = useState<number>(DEFAULTS.NUM_COLORS);
+  const [prevNumColors, setPrevNumColors] = useState<number>(DEFAULTS.NUM_COLORS);
   const [palette, setPalette] = useState<string[]>([]);
   const [paletteModified, setPaletteModified] = useState(false);
   const [modifiedColorIndices, setModifiedColorIndices] = useState<Set<number>>(new Set());
@@ -139,17 +145,17 @@ export const MosaicGenerator: React.FC<MosaicGeneratorProps> = ({ onBack }) => {
   const [hasTransparent, setHasTransparent] = useState(false);
   const [transparentCount, setTransparentCount] = useState(0);
 
-  const [tileSize, setTileSize] = useState(20);
-  const [tileSpacing, setTileSpacing] = useState(2);
-  const [spacingColor, setSpacingColor] = useState('#F5F1E8');
+  const [tileSize, setTileSize] = useState<number>(DEFAULTS.TILE_SIZE);
+  const [tileSpacing, setTileSpacing] = useState<number>(DEFAULTS.TILE_SPACING);
+  const [spacingColor, setSpacingColor] = useState<string>(DEFAULT_COLORS.SPACING);
   const [tileColorMap, setTileColorMap] = useState<number[][]>([]);
 
   const [borderEnabled, setBorderEnabled] = useState(false);
-  const [borderColor, setBorderColor] = useState('#A89F91');
-  const [borderWidth, setBorderWidth] = useState(10);
+  const [borderColor, setBorderColor] = useState<string>(DEFAULT_COLORS.BORDER);
+  const [borderWidth, setBorderWidth] = useState<number>(DEFAULTS.BORDER_WIDTH);
 
   const [effect3D, setEffect3D] = useState(false);
-  const [tileDepth, setTileDepth] = useState(3);
+  const [tileDepth, setTileDepth] = useState<number>(DEFAULTS.TILE_DEPTH);
 
   const [selectedColorGroup, setSelectedColorGroup] = useState<number | null>(null);
   const [hoveredColorGroup, setHoveredColorGroup] = useState<number | null>(null);
@@ -162,6 +168,17 @@ export const MosaicGenerator: React.FC<MosaicGeneratorProps> = ({ onBack }) => {
   const [isGenerating, setIsGenerating] = useState(false);
   const [imageChanged, setImageChanged] = useState(false);
   const { addToHistory, undo, redo, resetHistory, canUndo, canRedo } = useMosaicHistory();
+
+  const { handleImageUpload } = useMosaicImageUpload({
+    pendingDimensionsRef,
+    segmentMemoryRef,
+    setTileColorMap,
+    setMosaicWidth,
+    setMosaicHeight,
+    setKeepAspectRatio,
+    setImage,
+    setImageChanged,
+  });
 
   // Define updateColorStats FIRST (before applyStateFromHistory uses it)
   const updateColorStats = useCallback((colorMap: number[][], currentPalette?: string[]) => {
@@ -286,30 +303,22 @@ export const MosaicGenerator: React.FC<MosaicGeneratorProps> = ({ onBack }) => {
         if (newColors.includes(color)) continue;
         if (currentPalette.includes(color)) continue;
         
-        const colorRgb = hexToRgbArray(color);
+        const colorRgb = parseColorToRgb(color);
+
+        // Prefer colors far from the existing palette (fix expandPalette hex/rgb mix bug)
         const isSimilarToExisting = currentPalette.some(existingColor => {
-          if (!existingColor) return false;  // Guard against undefined
-          const existingRgb = hexToRgbArray(existingColor.startsWith('#') ? existingColor : rgbToHex(existingColor));
-          const distance = Math.sqrt(
-            Math.pow(colorRgb[0] - existingRgb[0], 2) +
-            Math.pow(colorRgb[1] - existingRgb[1], 2) +
-            Math.pow(colorRgb[2] - existingRgb[2], 2)
-          );
-          return distance < similarityThreshold;
+          if (!existingColor) return false;
+          const existingRgb = parseColorToRgb(existingColor);
+          return colorDistance(colorRgb, existingRgb) < similarityThreshold;
         });
         
         const isSimilarToNew = newColors.some(newColor => {
-          const newColorRgb = hexToRgbArray(newColor);
-          const distance = Math.sqrt(
-            Math.pow(colorRgb[0] - newColorRgb[0], 2) +
-            Math.pow(colorRgb[1] - newColorRgb[1], 2) +
-            Math.pow(colorRgb[2] - newColorRgb[2], 2)
-          );
-          return distance < 10;
+          const newColorRgb = parseColorToRgb(newColor);
+          return colorDistance(colorRgb, newColorRgb) < 10;
         });
 
         if (!isSimilarToExisting && !isSimilarToNew) {
-          newColors.push(color);
+          newColors.push(color.startsWith('#') ? hexToRgb(color) : color);
         }
       }
       
@@ -393,12 +402,12 @@ export const MosaicGenerator: React.FC<MosaicGeneratorProps> = ({ onBack }) => {
     // For removed colors, find closest remaining color
     currentPalette.forEach((color, oldIndex) => {
       if (!keptIndices.has(oldIndex)) {
-        const colorRgb = hexToRgb(color);
+        const colorRgb = hexToRgbArray(color);
         let closestIndex = 0;
         let closestDistance = Infinity;
 
         newPalette.forEach((newColor, newIndex) => {
-          const newColorRgb = hexToRgb(newColor);
+          const newColorRgb = hexToRgbArray(newColor);
           const distance = Math.sqrt(
             Math.pow(colorRgb[0] - newColorRgb[0], 2) +
             Math.pow(colorRgb[1] - newColorRgb[1], 2) +
@@ -436,11 +445,11 @@ export const MosaicGenerator: React.FC<MosaicGeneratorProps> = ({ onBack }) => {
     // Process transparency: extract transparent pixels and composite semi-transparent ones
     const { imageData, transparentMask } = processImageDataForTransparency(rawImageData);
 
-    // Generate and process color palette (only from non-transparent pixels)
-    const generatedPalette = quantizeColors(imageData, numColors);
-    const { uniqueColors: dedupedColors, mapping: dedupeMapping } = deduplicatePalette(generatedPalette);
-    const { reducedColors: finalPalette, mapping: reduceMapping } = reducePalette(dedupedColors, numColors);
-    // Create tile color map
+    // Generate palette from the source image with deterministic Lab k-means++.
+    // Map tiles directly against this palette and cache its Lab conversion.
+    const finalPalette = quantizeColors(imageData, numColors);
+    const matchPaletteColor = createLabColorMatcher(finalPalette);
+
     const newColorMap: number[][] = [];
 
     for (let y = 0; y < tilesY; y++) {
@@ -452,16 +461,11 @@ export const MosaicGenerator: React.FC<MosaicGeneratorProps> = ({ onBack }) => {
           // Transparent tile
           newColorMap[y][x] = -1;
         } else {
-          // Non-transparent tile - find closest color
           const i = pixelIndex * 4;
           const r = imageData.data[i];
           const g = imageData.data[i + 1];
           const b = imageData.data[i + 2];
-
-          const oldColorIndex = findClosestColor(r, g, b, generatedPalette);
-          const dedupedIndex = dedupeMapping[oldColorIndex];
-          const finalColorIndex = reduceMapping[dedupedIndex];
-          newColorMap[y][x] = finalColorIndex;
+          newColorMap[y][x] = matchPaletteColor(r, g, b);
         }
       }
     }
@@ -603,6 +607,7 @@ export const MosaicGenerator: React.FC<MosaicGeneratorProps> = ({ onBack }) => {
     
     const imageData = sampleImageToTileGrid(image, tilesX, tilesY);
     if (!imageData) return;
+    const matchPaletteColor = createLabColorMatcher(palette);
 
     const newColorMap: number[][] = [];
     for (let y = 0; y < tilesY; y++) {
@@ -613,7 +618,7 @@ export const MosaicGenerator: React.FC<MosaicGeneratorProps> = ({ onBack }) => {
         const g = imageData.data[i + 1];
         const b = imageData.data[i + 2];
 
-        const colorIndex = findClosestColor(r, g, b, palette);
+        const colorIndex = matchPaletteColor(r, g, b);
         newColorMap[y][x] = colorIndex;
       }
     }
@@ -639,52 +644,6 @@ export const MosaicGenerator: React.FC<MosaicGeneratorProps> = ({ onBack }) => {
   }, [image, palette, mosaicWidth, mosaicHeight, numColors, tileSize, tileSpacing, 
       spacingColor, borderEnabled, borderColor, borderWidth, effect3D, tileDepth, 
       addToHistory, updateColorStats]);
-
-  const handleImageUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        const img = new Image();
-        img.onload = () => {
-          // ALWAYS recalculate mosaic size on new image upload
-          const aspectRatio = img.width / img.height;
-          
-          // Target total tiles: ~1600 tiles (40x40)
-          // This ensures both dimensions have reasonable sizes
-          const targetTiles = 1600;
-          const targetWidth = Math.round(Math.sqrt(targetTiles * aspectRatio));
-          const targetHeight = Math.round(targetWidth / aspectRatio);
-          
-          // Ensure minimum 20 tiles on each side
-          const finalWidth = Math.max(20, targetWidth);
-          const finalHeight = Math.max(20, targetHeight);
-          // Store dimensions in ref for useEffect to use
-          pendingDimensionsRef.current = { width: finalWidth, height: finalHeight };
-          
-          // CRITICAL: Clear ALL state when uploading new image
-          // This prevents memory leaks and ensures clean slate for new image
-          setTileColorMap([]);
-          
-          // Clear segment memory - each image should have its own memory
-          // Don't carry over modifications from previous images!
-          segmentMemoryRef.current.clear();
-          
-          // Track image upload to GA
-          trackImageUpload('mosaic-generator', file.size, file.type);
-          
-          // Update dimensions and image
-          setMosaicWidth(finalWidth);
-          setMosaicHeight(finalHeight);
-          setKeepAspectRatio(true);
-          setImage(img);
-          setImageChanged(true);
-        };
-        img.src = e.target?.result as string;
-      };
-      reader.readAsDataURL(file);
-    }
-  };
 
   const handleCanvasTileClick = (tileX: number, tileY: number) => {
     if (selectedColorGroup === null || tileColorMap.length === 0) return;
@@ -945,8 +904,22 @@ export const MosaicGenerator: React.FC<MosaicGeneratorProps> = ({ onBack }) => {
       colorChangeTimerRef.current = null;
     }
     
-    // Reset history
-    resetHistory({ colorMap: [], palette: [] });
+    // Reset history with empty mosaic snapshot
+    resetHistory({
+      colorMap: [],
+      palette: [],
+      mosaicWidth: finalWidth,
+      mosaicHeight: finalHeight,
+      numColors: DEFAULTS.NUM_COLORS,
+      tileSize,
+      tileSpacing,
+      spacingColor,
+      borderEnabled,
+      borderColor,
+      borderWidth,
+      effect3D,
+      tileDepth,
+    });
     
     // Update refs with new dimensions
     pendingDimensionsRef.current = { width: finalWidth, height: finalHeight };
@@ -1200,9 +1173,10 @@ export const MosaicGenerator: React.FC<MosaicGeneratorProps> = ({ onBack }) => {
           generateMosaic();
         }
       } else if (numColors !== prevNumColors && !isRestoringHistoryRef.current) {
-        // Color count changed BY USER (not by Undo/Redo)
+        // Color count changed BY USER — re-quantize from source image,
+        // then SegmentMemory remaps painted regions onto the new palette
+        // (same spatial distribution → keep the user-chosen color).
         setPrevNumColors(numColors);
-        
         setPaletteModified(false);
         setModifiedColorIndices(new Set());
         generateMosaic();
@@ -1280,6 +1254,7 @@ export const MosaicGenerator: React.FC<MosaicGeneratorProps> = ({ onBack }) => {
       // This ensures that we're using the original color palette before any user modifications
       // SegmentMemory will then apply modifications on top of this clean base
       const resamplePalette = originalPaletteSnapshotRef.current.length > 0 ? originalPaletteSnapshotRef.current : palette;
+      const matchPaletteColor = createLabColorMatcher(resamplePalette);
       
       const newColorMap: number[][] = [];
       for (let y = 0; y < tilesY; y++) {
@@ -1297,7 +1272,7 @@ export const MosaicGenerator: React.FC<MosaicGeneratorProps> = ({ onBack }) => {
             const g = imageData.data[i + 1];
             const b = imageData.data[i + 2];
 
-            const colorIndex = findClosestColor(r, g, b, resamplePalette);
+            const colorIndex = matchPaletteColor(r, g, b);
             newColorMap[y][x] = colorIndex;
           }
         }
@@ -1570,7 +1545,7 @@ export const MosaicGenerator: React.FC<MosaicGeneratorProps> = ({ onBack }) => {
                 <input
                   ref={fileInputRef}
                   type="file"
-                  accept="image/*"
+                  accept="image/png,image/jpeg,image/gif,image/webp,image/bmp"
                   onChange={handleImageUpload}
                   className="hidden"
                 />
@@ -1730,6 +1705,8 @@ export const MosaicGenerator: React.FC<MosaicGeneratorProps> = ({ onBack }) => {
                       type="button"
                       onClick={handleCopy}
                       variant="outline"
+                      disabled={downloadFormat === 'png'}
+                      title={downloadFormat === 'png' ? t('pngCopyNotSupported') : t('copy')}
                     >
                       <Copy className="h-4 w-4 mr-2" />
                       {t('copy')}

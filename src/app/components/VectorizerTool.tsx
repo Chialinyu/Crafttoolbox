@@ -5,7 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
 import { Button } from './ui/button';
 import { Label } from './ui/label';
 import { Slider } from './ui/slider';
-import { Upload, Check, ChevronRight, Construction, Download, Copy } from 'lucide-react';
+import { Upload, Check, ChevronRight, Download, Copy } from 'lucide-react';
 import { toast } from 'sonner';
 import { ToolPageLayout } from './ui/ToolPageLayout';
 import { ImageUploader } from './vectorizer/ImageUploader';
@@ -15,13 +15,23 @@ import { SVGCanvas, type SVGCanvasRef } from './vectorizer/SVGCanvas';
 import { PathLayerPanel } from './vectorizer/PathLayerPanel';
 import { preprocessImage, calculateOptimalThreshold, calculateSuggestedDetailLevel, type PreprocessResult } from './vectorizer/utils/cvProcessing';
 import { vectorizeImage, generateSVG } from './vectorizer/utils/vectorization';
-import { DEFAULT_VALUES, LIMITS } from './vectorizer/constants';
+import { DEFAULT_VALUES } from './vectorizer/constants';
 import { usePreviewManager } from './vectorizer/hooks/usePreviewManager';
 import { mergeColorGroups } from './vectorizer/utils/colorMerging';
 import { trackToolUsage, trackImageUpload, trackExport } from '@/utils/analytics';
-import type { VectorPath, VectorizationConfig } from './vectorizer/utils/vectorization';
+import {
+  formatResizeWarning,
+  guardImageUpload,
+} from '@/utils/imageUploadGuard';
+import type {
+  StrokeLineCap,
+  StrokeLineJoin,
+  VectorPath,
+  VectorizationConfig,
+} from './vectorizer/utils/vectorization';
 
 type VectorizationMode = 'line' | 'fill' | 'mixed';
+type LineStyle = 'skeleton' | 'color-outline';
 type Step = 1 | 2 | 3 | 4 | 5;
 
 /**
@@ -59,6 +69,7 @@ export const VectorizerTool: React.FC<VectorizerToolProps> = ({ onBack }) => {
   // Step 2: Mode
   const [mode, setMode] = useState<VectorizationMode>('line');
   const [tempMode, setTempMode] = useState<VectorizationMode>('line'); // For edit mode
+  const [lineStyle, setLineStyle] = useState<LineStyle>('skeleton');
   const [isGeneratingModePreview, setIsGeneratingModePreview] = useState(false); // Loading state for mode preview
   
   // ✨ NEW: Mode preview cache - store results for each mode to avoid recalculation
@@ -76,19 +87,19 @@ export const VectorizerTool: React.FC<VectorizerToolProps> = ({ onBack }) => {
   }>>(new Map());
   
   // Step 3: Parameters (mode-specific)
-  const [blurRadius, setBlurRadius] = useState(DEFAULT_VALUES.BLUR_RADIUS);
-  const [threshold, setThreshold] = useState(DEFAULT_VALUES.THRESHOLD);
+  const [blurRadius, setBlurRadius] = useState<number>(DEFAULT_VALUES.BLUR_RADIUS);
+  const [threshold, setThreshold] = useState<number>(DEFAULT_VALUES.THRESHOLD);
   const [useAutoThreshold, setUseAutoThreshold] = useState(true);
   const [autoThresholdValue, setAutoThresholdValue] = useState<number | undefined>(undefined);
-  const [minArea, setMinArea] = useState(DEFAULT_VALUES.MIN_AREA);
-  const [colorCount, setColorCount] = useState(DEFAULT_VALUES.COLOR_COUNT); // For fill/mixed mode
+  const [minArea, setMinArea] = useState<number>(DEFAULT_VALUES.MIN_AREA);
+  const [colorCount, setColorCount] = useState<number>(DEFAULT_VALUES.COLOR_COUNT); // For fill/mixed mode
   
   // Temp values for editing
-  const [tempBlurRadius, setTempBlurRadius] = useState(DEFAULT_VALUES.BLUR_RADIUS);
-  const [tempThreshold, setTempThreshold] = useState(DEFAULT_VALUES.THRESHOLD);
+  const [tempBlurRadius, setTempBlurRadius] = useState<number>(DEFAULT_VALUES.BLUR_RADIUS);
+  const [tempThreshold, setTempThreshold] = useState<number>(DEFAULT_VALUES.THRESHOLD);
   const [tempUseAutoThreshold, setTempUseAutoThreshold] = useState(true);
-  const [tempMinArea, setTempMinArea] = useState(DEFAULT_VALUES.MIN_AREA);
-  const [tempColorCount, setTempColorCount] = useState(DEFAULT_VALUES.COLOR_COUNT);
+  const [tempMinArea, setTempMinArea] = useState<number>(DEFAULT_VALUES.MIN_AREA);
+  const [tempColorCount, setTempColorCount] = useState<number>(DEFAULT_VALUES.COLOR_COUNT);
 
   const [processedImageData, setProcessedImageData] = useState<ImageData | null>(null);
   const [previewImageData, setPreviewImageData] = useState<ImageData | null>(null);
@@ -109,12 +120,14 @@ export const VectorizerTool: React.FC<VectorizerToolProps> = ({ onBack }) => {
   // Step 3 parameters
   const [precision, setPrecision] = useState(70);
   const [simplifyPath, setSimplifyPath] = useState(true);
-  // ❌ REMOVED: useBezierCurves state - now always uses Potrace fallback strategy
   
   // Step 4: Vectorization
-  const [pathPrecision, setPathPrecision] = useState(DEFAULT_VALUES.PATH_PRECISION);
+  const [pathPrecision, setPathPrecision] = useState<number>(DEFAULT_VALUES.PATH_PRECISION);
   const [strokeWidthMultiplier, setStrokeWidthMultiplier] = useState(1.0); // 🆕 Stroke width control
-  const [detailLevel, setDetailLevel] = useState(DEFAULT_VALUES.DETAIL_LEVEL); // 🆕 Detail preservation level
+  const [strokeColor, setStrokeColor] = useState('#000000');
+  const [strokeLineCap, setStrokeLineCap] = useState<StrokeLineCap>('round');
+  const [strokeLineJoin, setStrokeLineJoin] = useState<StrokeLineJoin>('round');
+  const [detailLevel, setDetailLevel] = useState<number>(DEFAULT_VALUES.DETAIL_LEVEL); // 🆕 Detail preservation level
   const [vectorPaths, setVectorPaths] = useState<VectorPath[]>([]);
   const [isVectorizing, setIsVectorizing] = useState(false);
   
@@ -140,6 +153,8 @@ export const VectorizerTool: React.FC<VectorizerToolProps> = ({ onBack }) => {
   // Step 1: Upload Image
   // ======================================================================
   const handleImageUpload = useCallback((imageData: ImageData, img: HTMLImageElement) => {
+    trackImageUpload('vectorizer-tool');
+
     // ✅ CRITICAL: Cancel any ongoing precomputation
     if (precomputeTimerRef.current) {
       clearTimeout(precomputeTimerRef.current);
@@ -182,6 +197,11 @@ export const VectorizerTool: React.FC<VectorizerToolProps> = ({ onBack }) => {
     // Reset all parameters to defaults
     setMode('line');
     setTempMode('line');
+    setLineStyle('skeleton');
+    setStrokeWidthMultiplier(1);
+    setStrokeColor('#000000');
+    setStrokeLineCap('round');
+    setStrokeLineJoin('round');
     setBlurRadius(DEFAULT_VALUES.BLUR_RADIUS);
     setThreshold(DEFAULT_VALUES.THRESHOLD);
     setUseAutoThreshold(true);
@@ -386,14 +406,16 @@ export const VectorizerTool: React.FC<VectorizerToolProps> = ({ onBack }) => {
       threshold: effectiveThreshold,
       useAutoThreshold: tempUseAutoThreshold,
       mode: tempMode, // ⚡ Use tempMode since we're about to confirm it
-      colorCount: tempMode !== 'line' ? tempColorCount : undefined,
+      lineStyle,
+      colorCount: tempMode !== 'line' || lineStyle === 'color-outline' ? tempColorCount : undefined,
     });
     
     // ✨ Remember these parameters so Step 3 useEffect knows they're already computed
-    lastComputedParamsRef.current = currentParams;
+    const canReuseModePreview = !(tempMode === 'line' && lineStyle === 'color-outline');
+    lastComputedParamsRef.current = canReuseModePreview ? currentParams : null;
     
     // 🎯 NEW: Restore cluster labels from cache when entering Step 3
-    const cachedLabels = modeLabelsCache.current.get(tempMode);
+    const cachedLabels = canReuseModePreview ? modeLabelsCache.current.get(tempMode) : undefined;
     if (cachedLabels) {
       setClusterLabels(cachedLabels.labels);
       setClusterCount(cachedLabels.clusterCount);
@@ -406,7 +428,7 @@ export const VectorizerTool: React.FC<VectorizerToolProps> = ({ onBack }) => {
     setMode(tempMode);
     setColorCount(tempColorCount);
     setCurrentStep(3);
-  }, [tempMode, tempColorCount, tempBlurRadius, tempThreshold, tempUseAutoThreshold, autoThresholdValue]);
+  }, [tempMode, tempColorCount, tempBlurRadius, tempThreshold, tempUseAutoThreshold, autoThresholdValue, lineStyle]);
 
   // ======================================================================
   // Step 3: Adjust Parameters (Real-time preview)
@@ -492,7 +514,8 @@ export const VectorizerTool: React.FC<VectorizerToolProps> = ({ onBack }) => {
       threshold: effectiveThreshold,
       useAutoThreshold: tempUseAutoThreshold,
       mode,
-      colorCount: mode !== 'line' ? tempColorCount : undefined,
+      lineStyle,
+      colorCount: mode !== 'line' || lineStyle === 'color-outline' ? tempColorCount : undefined,
     });
     
     // ⚡ Skip if parameters haven't changed (e.g., just entering Step 3 from Step 2, or after merging colors)
@@ -514,7 +537,8 @@ export const VectorizerTool: React.FC<VectorizerToolProps> = ({ onBack }) => {
         threshold: effectiveThreshold,
         useAutoThreshold: tempUseAutoThreshold,
         mode,
-        colorCount: mode !== 'line' ? tempColorCount : undefined,
+        lineStyle,
+        colorCount: mode !== 'line' || lineStyle === 'color-outline' ? tempColorCount : undefined,
       };
       
       // ⚡ Use setTimeout(0) to yield to browser and allow scroll
@@ -545,7 +569,7 @@ export const VectorizerTool: React.FC<VectorizerToolProps> = ({ onBack }) => {
         clearTimeout(previewTimerRef.current);
       }
     };
-  }, [tempBlurRadius, tempThreshold, tempUseAutoThreshold, tempColorCount, originalImageData, currentStep, editingStep, autoThresholdValue, mode]);
+  }, [tempBlurRadius, tempThreshold, tempUseAutoThreshold, tempColorCount, originalImageData, currentStep, editingStep, autoThresholdValue, mode, lineStyle]);
 
   const handleConfirmParams = useCallback(() => {
     // Apply temp values
@@ -573,7 +597,8 @@ export const VectorizerTool: React.FC<VectorizerToolProps> = ({ onBack }) => {
           threshold: effectiveThreshold,
           useAutoThreshold: tempUseAutoThreshold,
           mode,
-          colorCount: mode !== 'line' ? tempColorCount : undefined,
+          lineStyle,
+          colorCount: mode !== 'line' || lineStyle === 'color-outline' ? tempColorCount : undefined,
         };
         const result = preprocessImage(originalImageData, config);
         processed = result.imageData;
@@ -604,7 +629,8 @@ export const VectorizerTool: React.FC<VectorizerToolProps> = ({ onBack }) => {
           threshold: effectiveThreshold,
           useAutoThreshold: tempUseAutoThreshold,
           mode,
-          colorCount: mode !== 'line' ? tempColorCount : undefined,
+          lineStyle,
+          colorCount: mode !== 'line' || lineStyle === 'color-outline' ? tempColorCount : undefined,
         };
         const result = preprocessImage(originalImageData, config);
         processed = result.imageData;
@@ -636,11 +662,11 @@ export const VectorizerTool: React.FC<VectorizerToolProps> = ({ onBack }) => {
         try {
           const vectorConfig = {
             mode: mode === 'line' ? 'stroke' : mode === 'fill' ? 'fill' : 'mixed',
+            lineStyle,
             precision: pathPrecision,
             minArea: tempMinArea,
             simplify: simplifyPath,
             detailLevel, // 🆕 Detail preservation level
-            // ❌ REMOVED: useBezierCurves, now always uses Potrace fallback strategy
             isCancelledRef, // ✅ Pass cancellation ref
             labels: processedLabels || undefined, // 🎯 Pass cluster labels
             clusterCount: processedClusterCount || undefined, // 🎯 Pass cluster count
@@ -668,7 +694,7 @@ export const VectorizerTool: React.FC<VectorizerToolProps> = ({ onBack }) => {
       console.error('Preprocessing error:', error);
       setEditingStep(null);
     }
-  }, [originalImageData, previewImageData, clusterLabels, clusterCount, clusterToMorandiMap, tempBlurRadius, tempThreshold, tempUseAutoThreshold, tempMinArea, tempColorCount, autoThresholdValue, mode, pathPrecision, simplifyPath]); // 🔧 FIX: Add useBezierCurves to deps
+  }, [originalImageData, previewImageData, clusterLabels, clusterCount, clusterToMorandiMap, tempBlurRadius, tempThreshold, tempUseAutoThreshold, tempMinArea, tempColorCount, autoThresholdValue, mode, lineStyle, pathPrecision, simplifyPath, detailLevel]);
 
   // ======================================================================
   // Step 4: Generate Vectors
@@ -702,28 +728,36 @@ export const VectorizerTool: React.FC<VectorizerToolProps> = ({ onBack }) => {
     // 🎯 CRITICAL FIX: Use previewImageData (after merge) instead of processedImageData
     if (!previewImageData) return;
 
+    isCancelledRef.current = false;
     setIsVectorizing(true);
 
     setTimeout(async () => {
-      const config = {
-        mode: mode === 'line' ? 'stroke' : mode === 'fill' ? 'fill' : 'mixed',
-        precision: pathPrecision,
-        minArea,
-        simplify: simplifyPath,
-        detailLevel, // 🆕 Detail preservation level
-        // ❌ REMOVED: useBezierCurves, now always uses Potrace fallback strategy
-        labels: clusterLabels || undefined, // 🎯 Pass cluster labels FROM STATE
-        clusterCount: clusterCount || undefined, // 🎯 Pass cluster count FROM STATE
-        clusterToMorandiMap: clusterToMorandiMap || undefined, // 🎯 Pass cluster to Morandi map FROM STATE
-      };
+      try {
+        const config: VectorizationConfig = {
+          mode: mode === 'line' ? 'stroke' : mode === 'fill' ? 'fill' : 'mixed',
+          lineStyle,
+          precision: pathPrecision,
+          minArea,
+          simplify: simplifyPath,
+          detailLevel, // 🆕 Detail preservation level
+          labels: clusterLabels || undefined,
+          clusterCount: clusterCount || undefined,
+          clusterToMorandiMap: clusterToMorandiMap || undefined,
+          isCancelledRef,
+        };
 
-      // 🎯 Use previewImageData which reflects any merge operations from Step 3
-      const paths = await vectorizeImage(previewImageData, config); // 🆕 await async function
-      setVectorPaths(paths);
-      setIsVectorizing(false);
-      setCurrentStep(5);
+        const paths = await vectorizeImage(previewImageData, config);
+        if (isCancelledRef.current) return;
+        setVectorPaths(paths);
+        setCurrentStep(5);
+      } catch (error) {
+        console.error('❌ Vectorization error:', error);
+        toast.error(t('vectorizationFailed') || 'Vectorization failed. Please try again.');
+      } finally {
+        setIsVectorizing(false);
+      }
     }, 100);
-  }, [previewImageData, mode, pathPrecision, minArea, simplifyPath, clusterLabels, clusterCount, clusterToMorandiMap]);
+  }, [previewImageData, mode, lineStyle, pathPrecision, minArea, simplifyPath, detailLevel, clusterLabels, clusterCount, clusterToMorandiMap, t]);
 
   // 🆕 Re-vectorize when detail level changes in Step 4
   useEffect(() => {
@@ -742,8 +776,10 @@ export const VectorizerTool: React.FC<VectorizerToolProps> = ({ onBack }) => {
     
     detailLevelTimerRef.current = setTimeout(async () => {
       try {
-        const config = {
+        isCancelledRef.current = false;
+        const config: VectorizationConfig = {
           mode: mode === 'line' ? 'stroke' : mode === 'fill' ? 'fill' : 'mixed',
+          lineStyle,
           precision: pathPrecision,
           minArea,
           simplify: simplifyPath,
@@ -751,10 +787,13 @@ export const VectorizerTool: React.FC<VectorizerToolProps> = ({ onBack }) => {
           labels: clusterLabels || undefined,
           clusterCount: clusterCount || undefined,
           clusterToMorandiMap: clusterToMorandiMap || undefined,
+          isCancelledRef,
         };
         
         const paths = await vectorizeImage(imageData, config);
-        setVectorPaths(paths);
+        if (!isCancelledRef.current) {
+          setVectorPaths(paths);
+        }
       } catch (error) {
         console.error('❌ Re-vectorization error:', error);
       } finally {
@@ -763,11 +802,12 @@ export const VectorizerTool: React.FC<VectorizerToolProps> = ({ onBack }) => {
     }, 300); // Debounce 300ms
     
     return () => {
+      isCancelledRef.current = true;
       if (detailLevelTimerRef.current) {
         clearTimeout(detailLevelTimerRef.current);
       }
     };
-  }, [detailLevel, currentStep, editingStep, previewImageData, processedImageData, mode, pathPrecision, minArea, simplifyPath, clusterLabels, clusterCount, clusterToMorandiMap]);
+  }, [detailLevel, currentStep, editingStep, previewImageData, processedImageData, mode, lineStyle, pathPrecision, minArea, simplifyPath, clusterLabels, clusterCount, clusterToMorandiMap]);
 
   // ======================================================================
   // Edit Mode Handlers
@@ -903,79 +943,30 @@ export const VectorizerTool: React.FC<VectorizerToolProps> = ({ onBack }) => {
                     ref={fileInputRef}
                     type="file"
                     accept="image/*"
-                    onChange={(e) => {
+                    onChange={async (e) => {
                       const file = e.target.files?.[0];
+                      e.target.value = '';
                       if (!file) return;
-                      
-                      // Track image upload
-                      trackImageUpload('vectorizer-tool', file.size, file.type);
-                      
-                      const reader = new FileReader();
-                      reader.onload = (readerEvent) => {
-                        const img = new Image();
-                        img.onload = () => {
-                          // ✅ Check image dimensions and resize if needed
-                          let targetWidth = img.width;
-                          let targetHeight = img.height;
-                          const totalPixels = img.width * img.height;
-                          
-                          // Check if image exceeds size limits
-                          if (img.width > LIMITS.MAX_IMAGE_WIDTH || 
-                              img.height > LIMITS.MAX_IMAGE_HEIGHT || 
-                              totalPixels > LIMITS.MAX_PIXELS) {
-                            
-                            // Calculate scale to fit within limits
-                            const scaleWidth = LIMITS.MAX_IMAGE_WIDTH / img.width;
-                            const scaleHeight = LIMITS.MAX_IMAGE_HEIGHT / img.height;
-                            const scalePixels = Math.sqrt(LIMITS.MAX_PIXELS / totalPixels);
-                            const scale = Math.min(scaleWidth, scaleHeight, scalePixels);
-                            
-                            targetWidth = Math.floor(img.width * scale);
-                            targetHeight = Math.floor(img.height * scale);
-                            
-                            toast.warning(
-                              `Image too large (${img.width}×${img.height}). Resized to ${targetWidth}×${targetHeight} for processing.`,
-                              { duration: 5000 }
-                            );
-                          }
-                          
-                          const canvas = document.createElement('canvas');
-                          canvas.width = targetWidth;
-                          canvas.height = targetHeight;
-                          const ctx = canvas.getContext('2d');
-                          
-                          if (ctx) {
-                            ctx.drawImage(img, 0, 0, targetWidth, targetHeight);
-                            
-                            try {
-                              const imageData = ctx.getImageData(0, 0, targetWidth, targetHeight);
-                              
-                              // Create a new image object with the resized dimensions
-                              const resizedImg = new Image();
-                              resizedImg.width = targetWidth;
-                              resizedImg.height = targetHeight;
-                              resizedImg.src = canvas.toDataURL();
-                              
-                              handleImageUpload(imageData, resizedImg);
-                            } catch (error) {
-                              console.error('Failed to process image:', error);
-                              toast.error('Failed to process image. Please try a smaller image.');
-                            }
-                          }
-                        };
-                        
-                        img.onerror = () => {
-                          toast.error('Failed to load image');
-                        };
-                        
-                        img.src = readerEvent.target?.result as string;
-                      };
-                      
-                      reader.onerror = () => {
-                        toast.error('Failed to read file');
-                      };
-                      
-                      reader.readAsDataURL(file);
+
+                      const result = await guardImageUpload(file);
+                      if (result.ok === false) {
+                        toast.error(result.message);
+                        return;
+                      }
+
+                      if (result.wasResized) {
+                        toast.warning(
+                          formatResizeWarning(
+                            result.originalWidth,
+                            result.originalHeight,
+                            result.image.width,
+                            result.image.height
+                          ),
+                          { duration: 5000 }
+                        );
+                      }
+
+                      handleImageUpload(result.imageData, result.image);
                     }}
                     className="hidden"
                   />
@@ -1071,6 +1062,8 @@ export const VectorizerTool: React.FC<VectorizerToolProps> = ({ onBack }) => {
                   colorCount={tempColorCount}
                   onColorCountChange={setTempColorCount}
                   mode={mode}
+                  lineStyle={lineStyle}
+                  onLineStyleChange={setLineStyle}
                   isEditMode={editingStep === 3}
                   onCancel={handleCancelEdit}
                   previewImageData={previewImageData}
@@ -1202,25 +1195,89 @@ export const VectorizerTool: React.FC<VectorizerToolProps> = ({ onBack }) => {
                       />
                     )}
                     
-                    {/* 🆕 Stroke Width Control (Line Mode only) */}
-                    {mode === 'line' && (
-                      <div className="space-y-2 p-3 bg-accent/5 rounded-lg border border-accent/20">
-                        <div className="flex items-center justify-between">
-                          <Label htmlFor="stroke-width-step4" className="text-sm font-medium">{t('strokeWidth')}</Label>
-                          <span className="text-sm text-muted-foreground font-mono">{strokeWidthMultiplier.toFixed(1)}x</span>
+                    {/* Stroke style for Line and Mixed outlines. */}
+                    {mode !== 'fill' && (
+                      <div className="space-y-4 p-3 bg-accent/5 rounded-lg border border-accent/20">
+                        <div className="space-y-2">
+                          <div className="flex items-center justify-between">
+                            <Label htmlFor="stroke-width-step4" className="text-sm font-medium">{t('strokeWidth')}</Label>
+                            <span className="text-sm text-muted-foreground font-mono">{strokeWidthMultiplier.toFixed(1)}x</span>
+                          </div>
+                          <Slider
+                            id="stroke-width-step4"
+                            min={0.5}
+                            max={3}
+                            step={0.1}
+                            value={[strokeWidthMultiplier]}
+                            onValueChange={(values) => setStrokeWidthMultiplier(values[0])}
+                            disabled={isVectorizing}
+                          />
+                          <p className="text-xs text-muted-foreground">
+                            {t('adjustStrokeWidthDesc')}
+                          </p>
                         </div>
-                        <Slider
-                          id="stroke-width-step4"
-                          min={0.5}
-                          max={3}
-                          step={0.1}
-                          value={[strokeWidthMultiplier]}
-                          onValueChange={(values) => setStrokeWidthMultiplier(values[0])}
-                          disabled={isVectorizing}
-                        />
-                        <p className="text-xs text-muted-foreground">
-                          {t('adjustStrokeWidthDesc')}
-                        </p>
+
+                        <div className="space-y-2">
+                          <Label htmlFor="stroke-color-step4">{t('strokeColor')}</Label>
+                          <div className="flex h-10 items-center gap-3 rounded-md border border-input bg-background px-3">
+                            <input
+                              id="stroke-color-step4"
+                              type="color"
+                              value={strokeColor}
+                              onChange={(event) => setStrokeColor(event.target.value)}
+                              className="h-7 w-10 cursor-pointer border-0 bg-transparent p-0"
+                              aria-label={t('strokeColor')}
+                              disabled={isVectorizing}
+                            />
+                            <span className="text-sm font-mono uppercase tracking-wide">{strokeColor}</span>
+                          </div>
+                        </div>
+
+                        <fieldset className="space-y-2" disabled={isVectorizing}>
+                          <legend className="text-sm font-medium">{t('strokeLineCap')}</legend>
+                          <div className="grid grid-cols-3 gap-2" role="group" aria-label={t('strokeLineCap')}>
+                            {([
+                              ['round', 'strokeRound'],
+                              ['butt', 'strokeButt'],
+                              ['square', 'strokeSquare'],
+                            ] as const).map(([value, labelKey]) => (
+                              <Button
+                                key={value}
+                                type="button"
+                                size="sm"
+                                variant={strokeLineCap === value ? 'default' : 'outline'}
+                                aria-pressed={strokeLineCap === value}
+                                onClick={() => setStrokeLineCap(value)}
+                                className="w-full"
+                              >
+                                {t(labelKey)}
+                              </Button>
+                            ))}
+                          </div>
+                        </fieldset>
+
+                        <fieldset className="space-y-2" disabled={isVectorizing}>
+                          <legend className="text-sm font-medium">{t('strokeLineJoin')}</legend>
+                          <div className="grid grid-cols-3 gap-2" role="group" aria-label={t('strokeLineJoin')}>
+                            {([
+                              ['round', 'strokeRound'],
+                              ['bevel', 'strokeBevel'],
+                              ['miter', 'strokeMiter'],
+                            ] as const).map(([value, labelKey]) => (
+                              <Button
+                                key={value}
+                                type="button"
+                                size="sm"
+                                variant={strokeLineJoin === value ? 'default' : 'outline'}
+                                aria-pressed={strokeLineJoin === value}
+                                onClick={() => setStrokeLineJoin(value)}
+                                className="w-full"
+                              >
+                                {t(labelKey)}
+                              </Button>
+                            ))}
+                          </div>
+                        </fieldset>
                       </div>
                     )}
                     
@@ -1331,7 +1388,12 @@ export const VectorizerTool: React.FC<VectorizerToolProps> = ({ onBack }) => {
                           vectorPaths,
                           originalImage.width,
                           originalImage.height,
-                          strokeWidthMultiplier // 🆕 Apply stroke width multiplier
+                          {
+                            widthMultiplier: strokeWidthMultiplier,
+                            color: strokeColor,
+                            lineCap: strokeLineCap,
+                            lineJoin: strokeLineJoin,
+                          }
                         );
                         
                         // Track copy action
@@ -1376,7 +1438,12 @@ export const VectorizerTool: React.FC<VectorizerToolProps> = ({ onBack }) => {
                           vectorPaths,
                           originalImage.width,
                           originalImage.height,
-                          strokeWidthMultiplier // 🆕 Apply stroke width multiplier
+                          {
+                            widthMultiplier: strokeWidthMultiplier,
+                            color: strokeColor,
+                            lineCap: strokeLineCap,
+                            lineJoin: strokeLineJoin,
+                          }
                         );
                         const blob = new Blob([svg], { type: 'image/svg+xml' });
                         const url = URL.createObjectURL(blob);
@@ -1431,6 +1498,9 @@ export const VectorizerTool: React.FC<VectorizerToolProps> = ({ onBack }) => {
             hiddenPathIndices={hiddenPathIndices}
             isProcessing={isGeneratingModePreview || isGeneratingPreview || isVectorizing}
             strokeWidthMultiplier={strokeWidthMultiplier}
+            strokeColor={strokeColor}
+            strokeLineCap={strokeLineCap}
+            strokeLineJoin={strokeLineJoin}
           />
         </div>
       </div>

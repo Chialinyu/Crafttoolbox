@@ -23,6 +23,8 @@ interface PreprocessPanelProps {
   colorCount?: number;
   onColorCountChange?: (value: number) => void;
   mode?: 'line' | 'fill' | 'mixed';
+  lineStyle?: 'skeleton' | 'color-outline';
+  onLineStyleChange?: (value: 'skeleton' | 'color-outline') => void;
   isEditMode?: boolean;
   onCancel?: () => void;
   previewImageData?: ImageData | null;
@@ -58,13 +60,14 @@ export const PreprocessPanel: React.FC<PreprocessPanelProps> = ({
   onMergeColors,
   selectedColorIndices,
   onColorSelect,
-  // ❌ REMOVED: Stroke Width and Detail Level moved to Step 4
+  lineStyle = 'skeleton',
+  onLineStyleChange,
 }) => {
   const { t } = useLanguage();
 
   // Determine which parameters to show based on mode
-  const showThreshold = mode === 'line' || mode === 'mixed';
-  const showColorCount = mode === 'fill' || mode === 'mixed';
+  const showThreshold = mode === 'line' && lineStyle === 'skeleton';
+  const showColorCount = mode === 'fill' || mode === 'mixed' || (mode === 'line' && lineStyle === 'color-outline');
 
   // State to hold extracted colors and selection
   const [extractedColors, setExtractedColors] = useState<Array<{
@@ -85,6 +88,33 @@ export const PreprocessPanel: React.FC<PreprocessPanelProps> = ({
 
   return (
     <div className="space-y-6">
+      {mode === 'line' && (
+        <fieldset className="space-y-2">
+          <legend className="text-sm font-medium">{t('lineSource')}</legend>
+          <div className="grid grid-cols-2 gap-2">
+            <Button
+              type="button"
+              variant={lineStyle === 'skeleton' ? 'default' : 'outline'}
+              aria-pressed={lineStyle === 'skeleton'}
+              onClick={() => onLineStyleChange?.('skeleton')}
+            >
+              {t('lineSourceSkeleton')}
+            </Button>
+            <Button
+              type="button"
+              variant={lineStyle === 'color-outline' ? 'default' : 'outline'}
+              aria-pressed={lineStyle === 'color-outline'}
+              onClick={() => onLineStyleChange?.('color-outline')}
+            >
+              {t('lineSourceOutline')}
+            </Button>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            {t(lineStyle === 'skeleton' ? 'lineSourceSkeletonDesc' : 'lineSourceOutlineDesc')}
+          </p>
+        </fieldset>
+      )}
+
       {/* Blur Radius - Always shown */}
       <div className="space-y-2">
         <div className="flex justify-between items-center">

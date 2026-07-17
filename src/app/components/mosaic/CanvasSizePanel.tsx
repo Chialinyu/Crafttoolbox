@@ -7,6 +7,7 @@ import { Label } from '../ui/label';
 import { Slider } from '../ui/slider';
 import { Switch } from '../ui/switch';
 import { calculateTotalTiles } from '../../../utils/mosaicUtils';
+import { DEFAULTS } from './constants';
 
 interface CanvasSizePanelProps {
   mosaicWidth: number;
@@ -76,8 +77,8 @@ export const CanvasSizePanel: React.FC<CanvasSizePanelProps> = ({
                 <Slider
                   value={[mosaicWidth]}
                   onValueChange={(v) => onWidthChange(v[0])}
-                  min={10}
-                  max={150}
+                  min={DEFAULTS.MIN_CANVAS_DIMENSION}
+                  max={DEFAULTS.MAX_CANVAS_DIMENSION}
                   step={1}
                   className="mt-2"
                   onClick={(e) => e.stopPropagation()}
@@ -89,8 +90,8 @@ export const CanvasSizePanel: React.FC<CanvasSizePanelProps> = ({
                 <Slider
                   value={[mosaicHeight]}
                   onValueChange={(v) => onHeightChange(v[0])}
-                  min={10}
-                  max={150}
+                  min={DEFAULTS.MIN_CANVAS_DIMENSION}
+                  max={DEFAULTS.MAX_CANVAS_DIMENSION}
                   step={1}
                   className="mt-2"
                   onClick={(e) => e.stopPropagation()}

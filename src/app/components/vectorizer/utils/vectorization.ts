@@ -48,7 +48,19 @@
 import Potrace from 'potrace';
 import { zhangSuenThinning, traceSkeletonPaths, extractContours, smoothContourPoints, computeDistanceTransform, morphologicalClose } from './skeletonization';
 import { fitEllipse, ellipseToSVGPath, detectCircleOrEllipse } from './ellipseFitting';
+import {
+  fitFilledRectangle,
+  fitRectangleFromContour,
+  isRectangularPolyline,
+  isNearFullCanvasRect,
+  isCanvasBackgroundRegion,
+  detectTriangle,
+  rectangleToSVGPath,
+  polygonToSVGPath,
+} from './rectangleFitting';
+import { contourToSmoothBezierPath, pointsToFittedBezierPath } from './pathSmoothing';
 import { buildSkeletonGraph, pruneSkeletonGraph, graphToSkeleton } from './skeletonGraph';
+import { yieldWhenIdle } from '../../../../utils/yieldToMain';
 
 // ============================================================================
 // Types
@@ -105,16 +117,26 @@ export interface VectorPath {
 
 export interface VectorizationConfig {
   mode: 'stroke' | 'fill' | 'mixed';
+  lineStyle?: 'skeleton' | 'color-outline';
   precision: number;
   minArea: number;
   simplify: boolean;
-  // ❌ REMOVED: useBezierCurves, bezierAlgorithm - now always uses Potrace fallback strategy
   useImprovedTracing?: boolean; // 🆕 NEW: Use improved contour tracing (default: true)
   detailLevel?: number; // 🆕 Detail preservation level (0-100, default: 50) - controls path filtering aggressiveness
   isCancelledRef?: React.MutableRefObject<boolean>; // Optional cancellation flag
   labels?: Uint8Array; // 🎯 Cluster labels from preprocessing (sequential: 0, 1, 2, ...)
   clusterCount?: number; // 🎯 Number of clusters
   clusterToMorandiMap?: number[]; // 🎯 Mapping from cluster ID to Morandi palette index
+}
+
+export type StrokeLineCap = 'round' | 'butt' | 'square';
+export type StrokeLineJoin = 'round' | 'bevel' | 'miter';
+
+export interface StrokeRenderOptions {
+  widthMultiplier: number;
+  color: string;
+  lineCap: StrokeLineCap;
+  lineJoin: StrokeLineJoin;
 }
 
 // ============================================================================
@@ -806,120 +828,20 @@ export function pointsToSVGPath(points: Point[], closed: boolean): string {
 // ============================================================================
 
 /**
- * 🆕 NEW: Convert array of points to smooth SVG path with bezier curves
- * Uses adaptive curvature analysis to determine optimal smoothness
+ * 🆕 Convert points to smooth SVG cubic Bezier path.
+ * Prefers few fitted C segments over a polyline of pixel steps.
  */
 export function pointsToSmoothBezierPath(points: Point[], closed: boolean): string {
   if (points.length < 3) {
-    // Too few points - use straight lines
     return pointsToSVGPath(points, closed);
   }
-  
-  // Note: Simplification is done externally via simplifyPath(), no need to downsample here
-  
-  // 🎯 Adaptive curvature analysis
-  // Measure how much the path curves to determine smoothness factor
-  let totalCurvature = 0;
-  for (let i = 1; i < points.length - 1; i++) {
-    const prev = points[i - 1];
-    const curr = points[i];
-    const next = points[i + 1];
-    
-    // Calculate angle change
-    const v1x = curr.x - prev.x;
-    const v1y = curr.y - prev.y;
-    const v2x = next.x - curr.x;
-    const v2y = next.y - curr.y;
-    
-    const dot = v1x * v2x + v1y * v2y;
-    const cross = Math.abs(v1x * v2y - v1y * v2x);
-    const angle = Math.atan2(cross, dot);
-    
-    totalCurvature += angle;
+
+  // Only true rectangles stay polygonal.
+  if (closed && isRectangularPolyline(points)) {
+    return pointsToSVGPath(points.slice(0, 4), true);
   }
-  
-  const avgCurvature = totalCurvature / (points.length - 2);
-  
-  // 🎯 Balanced smoothness for flowing curves (0.38-0.58)
-  let adaptiveSmoothness: number;
-  if (avgCurvature < 0.05) {
-    // Very smooth curve (e.g., circle) - high smoothness
-    adaptiveSmoothness = 0.58;
-  } else if (avgCurvature < 0.10) {
-    // Moderate curve - medium-high smoothness
-    adaptiveSmoothness = 0.50;
-  } else if (avgCurvature < 0.20) {
-    // Sharp turns - medium smoothness
-    adaptiveSmoothness = 0.44;
-  } else {
-    // Very sharp turns - preserve details
-    adaptiveSmoothness = 0.38;
-  }
-  
-  // Calculate control points for each segment
-  const controlPoints: { cp1: Point; cp2: Point }[] = [];
-  
-  for (let i = 0; i < points.length; i++) {
-    const prev = points[(i - 1 + points.length) % points.length];
-    const curr = points[i];
-    const next = points[(i + 1) % points.length];
-    
-    // Tangent vector
-    const tx = next.x - prev.x;
-    const ty = next.y - prev.y;
-    const tLen = Math.sqrt(tx * tx + ty * ty);
-    
-    if (tLen === 0) {
-      controlPoints.push({ cp1: curr, cp2: curr });
-      continue;
-    }
-    
-    // Normalized tangent
-    const tnx = tx / tLen;
-    const tny = ty / tLen;
-    
-    // Distance to next point
-    const dx = next.x - curr.x;
-    const dy = next.y - curr.y;
-    const dist = Math.sqrt(dx * dx + dy * dy);
-    
-    // Control point distance (adaptive)
-    const cpDist = dist * adaptiveSmoothness;
-    
-    // Control points
-    const cp1 = {
-      x: curr.x + tnx * cpDist,
-      y: curr.y + tny * cpDist,
-    };
-    const cp2 = {
-      x: next.x - tnx * cpDist,
-      y: next.y - tny * cpDist,
-    };
-    
-    controlPoints.push({ cp1, cp2 });
-  }
-  
-  // Build SVG path with cubic bezier curves
-  let path = `M ${points[0].x},${points[0].y}`;
-  
-  for (let i = 0; i < points.length; i++) {
-    const nextIndex = (i + 1) % points.length;
-    const { cp1, cp2 } = controlPoints[i];
-    const nextPoint = points[nextIndex];
-    
-    if (!closed && i === points.length - 1) {
-      // Last segment in open path - don't curve back
-      break;
-    }
-    
-    path += ` C ${cp1.x},${cp1.y} ${cp2.x},${cp2.y} ${nextPoint.x},${nextPoint.y}`;
-  }
-  
-  if (closed) {
-    path += ' Z';
-  }
-  
-  return path;
+
+  return pointsToFittedBezierPath(points, closed);
 }
 
 // ============================================================================
@@ -1149,16 +1071,18 @@ export async function vectorizeImage(
   config: VectorizationConfig
 ): Promise<VectorPath[]> {
   const paths: VectorPath[] = [];
+  const outlinePaths: VectorPath[] = [];
   const data = imageData.data;
   const width = imageData.width;
   const height = imageData.height;
   
   // Calculate tolerance for path simplification
-  const tolerance = Math.max(0.2, (100 - config.precision) / 100);
+  // Keep a usable floor — sub-pixel epsilon leaves pixel staircases.
+  const tolerance = Math.max(1.2, ((100 - config.precision) / 100) * 4);
   
   try {
     // 🎨 STROKE MODE: HYBRID TRACE (closed shapes + centerlines)
-    if (config.mode === 'stroke') {
+    if (config.mode === 'stroke' && config.lineStyle !== 'color-outline') {
       // Step 0: Gaussian blur preprocessing
       const blurred = gaussianBlur(data, width, height, 1.0);
       
@@ -1231,18 +1155,12 @@ export async function vectorizeImage(
           });
           
         } else {
-          // FALLBACK: Use contour trace
-          if (config.simplify && tolerance > 0) {
-            points = simplifyPath(points, tolerance);
-          }
-          
-          if (points.length >= 3) {
-            try {
-              svgPath = pointsToSmoothBezierPath(points, true);
-            } catch (e) {
-              svgPath = pointsToSVGPath(points, true);
-            }
-          } else {
+          // FALLBACK: Smooth fitted Bezier from contour
+          try {
+            const fitted = contourToSmoothBezierPath(points, true, config.precision);
+            points = fitted.points;
+            svgPath = fitted.svgPath;
+          } catch (e) {
             svgPath = pointsToSVGPath(points, true);
           }
           
@@ -1282,21 +1200,14 @@ export async function vectorizeImage(
         const smoothedWidths = smoothWidthArray(widths, 5);
         const avgWidth = smoothedWidths.reduce((sum, w) => sum + w, 0) / smoothedWidths.length;
         
-        // Simplify - gentle simplification to preserve details
+        // Fitted cubic Bezier for centerlines (not pixel polylines)
         let points = skPath.points;
-        if (config.simplify && tolerance > 0) {
-          points = simplifyPath(points, tolerance * 1.5);
-        }
-        
-        // Smooth bezier
         let svgPath: string | undefined;
         if (points.length >= 3) {
           try {
-            // 🐛 DEBUG: Use straight lines for Line Mode to see raw skeleton shape
-            // This helps debug X-crossing issues (mouth / \ shapes)
-            // TODO: Re-enable bezier after confirming skeleton is correct
-            svgPath = pointsToSVGPath(points, false); // OPEN path with straight lines
-            // svgPath = pointsToSmoothBezierPath(points, false); // DISABLED temporarily
+            const fitted = contourToSmoothBezierPath(points, false, config.precision);
+            points = fitted.points;
+            svgPath = fitted.svgPath;
           } catch (e) {
             svgPath = pointsToSVGPath(points, false);
           }
@@ -1318,14 +1229,16 @@ export async function vectorizeImage(
       }
       
       // 🧹 INTELLIGENT PATH FILTERING - Using conservative filter
-      const { filterInsignificantPaths } = await import('./pathFilter');
+      const { filterInsignificantPaths, dedupeOverlappingStrokePaths } = await import('./pathFilter');
       const filteredPaths = filterInsignificantPaths(paths, width, height, config.detailLevel ?? 50);
       
-      return filteredPaths;
+      return dedupeOverlappingStrokePaths(filteredPaths);
     }
     
     // ✅ Cluster-based vectorization (fill mode - original logic)
     if (config.labels && config.clusterCount) {
+      let potraceUnavailable = false;
+
       // Process each cluster
       for (let clusterId = 0; clusterId < config.clusterCount; clusterId++) {
         if (config.isCancelledRef?.current) {
@@ -1376,9 +1289,6 @@ export async function vectorizeImage(
         const MAX_REGIONS_PER_CLUSTER = config.clusterCount <= 4 ? Infinity : 200;
         const MAX_TOTAL_PATHS = config.clusterCount <= 4 ? Infinity : 500;
         
-        // 🧪 TEST: Smart timeout protection - skip Potrace after first timeout in this cluster
-        let potraceTimedOut = false;
-        
         // 🎯 Generate batches with smart filtering (prioritize large regions)
         for (const batch of generateRegionBatches(clusterMask, width, height, config.minArea, 1, MAX_REGIONS_PER_CLUSTER)) {
           batchCount++;
@@ -1397,12 +1307,44 @@ export async function vectorizeImage(
               return paths;
             }
             
-            // 🧪 Memory monitoring removed for production
-            
-            // 🚀 UNCONDITIONAL THREE-LEVEL FALLBACK STRATEGY:
-            // 1. Potrace with adaptive downsampling (premium quality - handles both lines and curves optimally)
-            // 2. Improved contour + Custom Bezier (good quality fallback)
-            // 3. Straight lines (basic fallback)
+            // Prefer geometric primitives (rect/circle/ellipse/triangle).
+            // Pixel contours + Bezier overshoot creates the "protrusion" artifacts.
+            const isCanvasFrame = maskLooksLikeCanvasFrame(regionMask, width, height);
+            // Color-outline / line mode: never emit the full-image background frame.
+            if (isCanvasFrame && config.mode === 'stroke') {
+              continue;
+            }
+
+            const geometricPath = tryFitRegionGeometry(regionMask, width, height);
+            if (geometricPath) {
+              const regionPath: VectorPath = {
+                points: geometricPath.points,
+                closed: true,
+                type: 'fill',
+                color: `rgb(${color[0]}, ${color[1]}, ${color[2]})`,
+                svgPath: geometricPath.svgPath,
+                primitive: geometricPath.primitive,
+              };
+
+              if (config.mode !== 'stroke') {
+                paths.push(regionPath);
+              }
+              // Mixed outlines: skip outer canvas frame (causes "extra bounding box").
+              if (config.mode !== 'fill' && !isCanvasFrame) {
+                outlinePaths.push({
+                  ...regionPath,
+                  type: 'stroke',
+                  color: '#000000',
+                  strokeWidth: 2,
+                });
+              }
+              continue;
+            }
+
+            // Fallback strategy:
+            // 1. Potrace with adaptive downsampling
+            // 2. Improved contour + Custom Bezier
+            // 3. Straight lines
             
             let processedWithPotrace = false;
             
@@ -1410,13 +1352,15 @@ export async function vectorizeImage(
             // - Potrace now handles complexity internally via downsampling
             // - Only skip after timeout (which should be much rarer now)
             
-            if (potraceTimedOut) {
-              // Jump directly to Level 2
+            if (config.mode === 'stroke' || potraceUnavailable) {
+              // Color-outline mode only needs the boundary contour. Potrace adds
+              // no fill quality here. After one timeout, later regions use the
+              // contour fallback instead of repeating the same wait.
             } else {
               // Level 1: Try Potrace first (best quality for all image types)
               try {
                 // 🧪 TEST: Timeout protection - if Potrace hangs, fallback after 15s
-                const POTRACE_TIMEOUT_MS = 15000; // 15 seconds
+                const POTRACE_TIMEOUT_MS = 5000;
                 
                 const potracePromise = traceWithPotrace(
                   regionMask,
@@ -1430,7 +1374,7 @@ export async function vectorizeImage(
                 
                 const timeoutPromise = new Promise<string | null>((resolve) => {
                   timeoutId = setTimeout(() => {
-                    potraceTimedOut = true; // 🔒 Lock out Potrace for rest of cluster
+                    potraceUnavailable = true;
                     resolve(null);
                   }, POTRACE_TIMEOUT_MS);
                 });
@@ -1446,13 +1390,23 @@ export async function vectorizeImage(
                 if (potracePathString) {
                   // Successfully generated Potrace path!
                   
-                  paths.push({
+                  const regionPath: VectorPath = {
                     points: [], // Not used when svgPath is provided
                     closed: true,
-                    type: config.mode === 'fill' ? 'fill' : 'fill', // Always fill for potrace
+                    type: 'fill',
                     color: `rgb(${color[0]}, ${color[1]}, ${color[2]})`,
                     svgPath: potracePathString,
-                  });
+                  };
+
+                  paths.push(regionPath);
+                  if (config.mode !== 'fill' && !isCanvasFrame) {
+                    outlinePaths.push({
+                      ...regionPath,
+                      type: 'stroke',
+                      color: '#000000',
+                      strokeWidth: 2,
+                    });
+                  }
                   
                   processedWithPotrace = true;
                   
@@ -1479,6 +1433,8 @@ export async function vectorizeImage(
                 true // ✅ Always use improved algorithm
               );
               
+              const rankedContours: Array<{ contour: Point[]; area: number }> = [];
+
               for (const contour of contours) {
                 if (config.isCancelledRef?.current) {
                   // ⚠️ Keep cancellation message (user feedback)
@@ -1490,49 +1446,89 @@ export async function vectorizeImage(
                 const area = calculateArea(contour);
                 if (area < config.minArea) continue;
                 
-                // Simplify path if requested
-                let points = contour;
-                if (config.simplify && tolerance > 0) {
-                  points = simplifyPath(contour, tolerance);
-                }
+                rankedContours.push({ contour, area });
+              }
+
+              // One outer ring per region for strokes — avoids duplicate tracks
+              // from nested/noise contours. Fill keeps all rings (holes).
+              rankedContours.sort((a, b) => b.area - a.area);
+              const contoursToEmit =
+                config.mode === 'stroke'
+                  ? rankedContours.slice(0, 1)
+                  : rankedContours;
+
+              for (const { contour } of contoursToEmit) {
                 
-                // Determine path type based on mode
-                let type: 'stroke' | 'fill';
-                if (config.mode === 'fill') {
-                  type = 'fill';
-                } else {
-                  // Mixed mode: use area to decide
-                  type = area < 100 ? 'stroke' : 'fill';
-                }
-                
-                // Level 2: Always try Custom Bezier (fallback from Potrace)
+                // Prefer geometric primitives over Bezier-smoothed pixel contours.
+                const simplifiedForGeom =
+                  config.simplify && tolerance > 0
+                    ? simplifyPath(contour, tolerance)
+                    : contour;
+                const contourGeometry = tryFitContourGeometry(simplifiedForGeom, width, height);
                 let svgPath: string | undefined;
-                try {
-                  svgPath = pointsToSmoothBezierPath(points, true);
-                  // Validate generated path
-                  if (!svgPath || svgPath.length < 5) {
-                    console.warn('Invalid bezier path generated, falling back to straight lines');
-                    svgPath = undefined; // Level 3: Straight lines fallback
+                let primitive: ShapePrimitive | undefined;
+                let points = simplifiedForGeom;
+                if (contourGeometry) {
+                  svgPath = contourGeometry.svgPath;
+                  primitive = contourGeometry.primitive;
+                  points = contourGeometry.points;
+                } else {
+                  try {
+                    // Clean → smooth → simplify → fitted cubics (not pixel polylines)
+                    const fitted = contourToSmoothBezierPath(
+                      contour,
+                      true,
+                      config.precision
+                    );
+                    points = fitted.points;
+                    svgPath = fitted.svgPath;
+                    if (!svgPath || svgPath.length < 5) {
+                      svgPath = undefined;
+                    }
+                  } catch (error) {
+                    console.error('Error generating bezier path:', error);
+                    svgPath = undefined;
                   }
-                } catch (error) {
-                  console.error('Error generating bezier path:', error);
-                  svgPath = undefined; // Level 3: Straight lines fallback
                 }
                 
-                paths.push({
+                const regionPath: VectorPath = {
                   points,
                   closed: true,
-                  type,
+                  type: 'fill',
                   color: `rgb(${color[0]}, ${color[1]}, ${color[2]})`,
                   svgPath,
-                });
+                  primitive,
+                };
+
+                if (config.mode !== 'stroke') {
+                  paths.push(regionPath);
+                }
+                if (config.mode !== 'fill' && !isCanvasFrame) {
+                  outlinePaths.push({
+                    ...regionPath,
+                    type: 'stroke',
+                    color: '#000000',
+                    strokeWidth: 2,
+                  });
+                }
               }
             }
           }
           
-          // 🔧 FIX: Let browser breathe between batches (allows GC to reclaim memory)
-          await new Promise(resolve => setTimeout(resolve, 0));
+          // Let the browser paint / handle input between region batches
+          await yieldWhenIdle(16);
         }
+      }
+      // Render outlines after all fills so later regions cannot cover them.
+      paths.push(...outlinePaths);
+
+      // Shared edges between adjacent regions produce duplicate stroke tracks
+      // (often one smooth Bezier + one denser polyline). Keep the smoother one.
+      if (outlinePaths.length > 0) {
+        const { dedupeOverlappingStrokePaths } = await import('./pathFilter');
+        const deduped = dedupeOverlappingStrokePaths(paths);
+        paths.length = 0;
+        paths.push(...deduped);
       }
     } else {
       // 🎯 Fallback: color-based vectorization (old logic)
@@ -1546,6 +1542,8 @@ export async function vectorizeImage(
           console.log('Vectorization cancelled by user');
           return paths; // Return partial results
         }
+
+        await yieldWhenIdle(16);
         
         const color = colors[colorIndex];
         const contours = findContours(imageData, color, 500, config.isCancelledRef);
@@ -1561,12 +1559,6 @@ export async function vectorizeImage(
           const area = calculateArea(contour);
           if (area < config.minArea) continue;
           
-          // Simplify path if requested
-          let points = contour;
-          if (config.simplify && tolerance > 0) {
-            points = simplifyPath(contour, tolerance);
-          }
-          
           // Determine path type based on mode
           let type: 'stroke' | 'fill';
           if (config.mode === 'fill') {
@@ -1576,18 +1568,20 @@ export async function vectorizeImage(
             type = area < 100 ? 'stroke' : 'fill';
           }
           
-          // Level 2: Always try Custom Bezier (fallback from Potrace)
+          // Fitted cubic Beziers (clean + smooth + simplify)
+          let points = contour;
           let svgPath: string | undefined;
           try {
-            svgPath = pointsToSmoothBezierPath(points, true);
-            // Validate generated path
+            const fitted = contourToSmoothBezierPath(contour, true, config.precision);
+            points = fitted.points;
+            svgPath = fitted.svgPath;
             if (!svgPath || svgPath.length < 5) {
               console.warn('Invalid bezier path generated, falling back to straight lines');
-              svgPath = undefined; // Level 3: Straight lines fallback
+              svgPath = undefined;
             }
           } catch (error) {
             console.error('Error generating bezier path:', error);
-            svgPath = undefined; // Level 3: Straight lines fallback
+            svgPath = undefined;
           }
           
           paths.push({
@@ -1604,12 +1598,446 @@ export async function vectorizeImage(
     console.error('Error during vectorization:', error);
   }
   
-  return paths;
+  // Final pass: collapse duplicate stroke tracks across all code paths
+  try {
+    const { dedupeOverlappingStrokePaths } = await import('./pathFilter');
+    return dedupeOverlappingStrokePaths(paths);
+  } catch {
+    return paths;
+  }
 }
 
 // ============================================================================
 // Helper Functions
 // ============================================================================
+
+/**
+ * Fit a clean geometric primitive to a filled region mask.
+ * Order: rectangle/square → circle/ellipse → triangle.
+ * Avoids Bezier overshoot on basic icon shapes.
+ */
+function tryFitRegionGeometry(
+  regionMask: Uint8Array,
+  width: number,
+  height: number
+): {
+  points: Point[];
+  svgPath: string;
+  primitive: ShapePrimitive;
+} | null {
+  const pixels: Array<{ x: number; y: number }> = [];
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      if (regionMask[y * width + x] > 0) {
+        pixels.push({ x, y });
+      }
+    }
+  }
+
+  if (pixels.length < 16) return null;
+
+  // Full-canvas background plate must never become a geometric outer frame.
+  if (isCanvasBackgroundRegion(pixels, width, height)) {
+    return null;
+  }
+
+  // 1) Solid rectangle / square
+  const rectangle = fitFilledRectangle(pixels, width, height);
+  if (rectangle) {
+    const hw = rectangle.width / 2;
+    const hh = rectangle.height / 2;
+    const rad = ((rectangle.angle || 0) * Math.PI) / 180;
+    const cos = Math.cos(rad);
+    const sin = Math.sin(rad);
+    const localCorners = [
+      { x: -hw, y: -hh },
+      { x: hw, y: -hh },
+      { x: hw, y: hh },
+      { x: -hw, y: hh },
+    ];
+    const points = localCorners.map((p) => ({
+      x: rectangle.cx + p.x * cos - p.y * sin,
+      y: rectangle.cy + p.x * sin + p.y * cos,
+    }));
+    return {
+      points,
+      svgPath: rectangleToSVGPath(rectangle),
+      primitive: rectangle,
+    };
+  }
+
+  // 1b) Contour-corner rectangle (jagged fill that still has 4 right angles)
+  const regionContour = extractRegionBoundary(pixels, width, height);
+  if (regionContour.length >= 8) {
+    const cornerRect = fitRectangleFromContour(regionContour, width, height);
+    if (cornerRect) {
+      const hw = cornerRect.width / 2;
+      const hh = cornerRect.height / 2;
+      const rad = ((cornerRect.angle || 0) * Math.PI) / 180;
+      const cos = Math.cos(rad);
+      const sin = Math.sin(rad);
+      const localCorners = [
+        { x: -hw, y: -hh },
+        { x: hw, y: -hh },
+        { x: hw, y: hh },
+        { x: -hw, y: hh },
+      ];
+      const points = localCorners.map((p) => ({
+        x: cornerRect.cx + p.x * cos - p.y * sin,
+        y: cornerRect.cy + p.x * sin + p.y * cos,
+      }));
+      return {
+        points,
+        svgPath: rectangleToSVGPath(cornerRect),
+        primitive: cornerRect,
+      };
+    }
+  }
+
+  // 2) Circle / ellipse
+  let minX = width;
+  let maxX = 0;
+  let minY = height;
+  let maxY = 0;
+  for (const pixel of pixels) {
+    minX = Math.min(minX, pixel.x);
+    maxX = Math.max(maxX, pixel.x);
+    minY = Math.min(minY, pixel.y);
+    maxY = Math.max(maxY, pixel.y);
+  }
+
+  const bboxWidth = maxX - minX + 1;
+  const bboxHeight = maxY - minY + 1;
+  const bboxArea = bboxWidth * bboxHeight;
+  const fillRatio = pixels.length / bboxArea;
+
+  // Reject line-like / bar-like blobs — those are not ellipses.
+  const bboxAspect = Math.max(bboxWidth, bboxHeight) / Math.max(1, Math.min(bboxWidth, bboxHeight));
+  const isLineLike = bboxAspect > 2.8 && fillRatio > 0.55;
+
+  if (!isLineLike && fillRatio >= 0.62 && fillRatio <= 0.88) {
+    const area = pixels.length;
+    const perimeter = calculatePerimeter(pixels, width, height);
+    if (perimeter > 0) {
+      const circularity = (4 * Math.PI * area) / (perimeter * perimeter);
+      if (circularity >= 0.68) {
+        const ellipse = fitEllipse(pixels);
+        if (ellipse && ellipse.a >= 3 && ellipse.b >= 3) {
+          const ellipseArea = Math.PI * ellipse.a * ellipse.b;
+          const areaRatio = Math.min(area, ellipseArea) / Math.max(area, ellipseArea);
+          const aspectRatio = Math.max(ellipse.a, ellipse.b) / Math.min(ellipse.a, ellipse.b);
+
+          const cornerHits = [
+            regionMask[minY * width + minX],
+            regionMask[minY * width + maxX],
+            regionMask[maxY * width + minX],
+            regionMask[maxY * width + maxX],
+          ].filter((value) => value > 0).length;
+
+          // Keep ellipses relatively round; long sausages misclassify as ellipses.
+          if (areaRatio >= 0.84 && aspectRatio <= 2.2 && cornerHits < 2) {
+            const cos = Math.cos(ellipse.angle);
+            const sin = Math.sin(ellipse.angle);
+            let radialError = 0;
+            let boundarySamples = 0;
+            for (const pixel of pixels) {
+              const dx = pixel.x - ellipse.cx;
+              const dy = pixel.y - ellipse.cy;
+              const localX = (dx * cos + dy * sin) / ellipse.a;
+              const localY = (-dx * sin + dy * cos) / ellipse.b;
+              const radius = Math.hypot(localX, localY);
+              if (radius >= 0.9) {
+                radialError += (radius - 1) * (radius - 1);
+                boundarySamples++;
+              }
+            }
+            if (boundarySamples >= 8 && Math.sqrt(radialError / boundarySamples) <= 0.08) {
+              const primitive = detectCircleOrEllipse(pixels, 0.9);
+              if (primitive) {
+                const points: Point[] = [
+                  { x: ellipse.cx + ellipse.a * cos, y: ellipse.cy + ellipse.a * sin },
+                  { x: ellipse.cx - ellipse.b * sin, y: ellipse.cy + ellipse.b * cos },
+                  { x: ellipse.cx - ellipse.a * cos, y: ellipse.cy - ellipse.a * sin },
+                  { x: ellipse.cx + ellipse.b * sin, y: ellipse.cy - ellipse.b * cos },
+                ];
+                return {
+                  points,
+                  svgPath: ellipseToSVGPath(ellipse),
+                  primitive,
+                };
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // 3) Triangle
+  const triangle = detectTriangle(pixels);
+  if (triangle) {
+    return {
+      points: triangle.points,
+      svgPath: polygonToSVGPath(triangle),
+      primitive: triangle,
+    };
+  }
+
+  return null;
+}
+
+/**
+ * Fit a clean geometric primitive from a closed contour.
+ */
+function tryFitContourGeometry(
+  contour: Point[],
+  canvasWidth?: number,
+  canvasHeight?: number
+): {
+  points: Point[];
+  svgPath: string;
+  primitive: ShapePrimitive;
+} | null {
+  if (contour.length < 8) return null;
+
+  // 1) Corner-based rectangle (handles jagged pixel contours)
+  const cornerRect = fitRectangleFromContour(contour, canvasWidth, canvasHeight);
+  if (cornerRect) {
+    const hw = cornerRect.width / 2;
+    const hh = cornerRect.height / 2;
+    const rad = ((cornerRect.angle || 0) * Math.PI) / 180;
+    const cos = Math.cos(rad);
+    const sin = Math.sin(rad);
+    const localCorners = [
+      { x: -hw, y: -hh },
+      { x: hw, y: -hh },
+      { x: hw, y: hh },
+      { x: -hw, y: hh },
+    ];
+    const points = localCorners.map((p) => ({
+      x: cornerRect.cx + p.x * cos - p.y * sin,
+      y: cornerRect.cy + p.x * sin + p.y * cos,
+    }));
+    return {
+      points,
+      svgPath: rectangleToSVGPath(cornerRect),
+      primitive: cornerRect,
+    };
+  }
+
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+  for (const point of contour) {
+    minX = Math.min(minX, point.x);
+    maxX = Math.max(maxX, point.x);
+    minY = Math.min(minY, point.y);
+    maxY = Math.max(maxY, point.y);
+  }
+  const bboxWidth = maxX - minX + 1;
+  const bboxHeight = maxY - minY + 1;
+
+  // 2) Axis-aligned rect when contour hugs the bbox edges
+  const edgeScore = scoreContourRectangle(contour, minX, maxX, minY, maxY);
+  if (edgeScore >= 0.75 && bboxWidth >= 4 && bboxHeight >= 4) {
+    const rectangle = {
+      type: 'rectangle' as const,
+      cx: minX + bboxWidth / 2,
+      cy: minY + bboxHeight / 2,
+      width: bboxWidth,
+      height: bboxHeight,
+      angle: 0,
+    };
+    // Reject full-image outer frame.
+    if (
+      canvasWidth == null ||
+      canvasHeight == null ||
+      !isNearFullCanvasRect(rectangle, canvasWidth, canvasHeight)
+    ) {
+      return {
+        points: [
+          { x: minX, y: minY },
+          { x: maxX, y: minY },
+          { x: maxX, y: maxY },
+          { x: minX, y: maxY },
+        ],
+        svgPath: rectangleToSVGPath(rectangle),
+        primitive: rectangle,
+      };
+    }
+  }
+
+  // 3) Circle / ellipse from contour — do NOT use fillRatio on boundary points.
+  const ellipse = fitEllipse(contour);
+  if (!ellipse || ellipse.a < 4 || ellipse.b < 4) return null;
+
+  const aspectRatio = Math.max(ellipse.a, ellipse.b) / Math.min(ellipse.a, ellipse.b);
+  // Reject elongated line-like loops misread as ellipses.
+  if (aspectRatio > 2.0) return null;
+
+  const cos = Math.cos(ellipse.angle);
+  const sin = Math.sin(ellipse.angle);
+  let radialError = 0;
+  let quadrantMask = 0;
+  for (const point of contour) {
+    const dx = point.x - ellipse.cx;
+    const dy = point.y - ellipse.cy;
+    const localX = (dx * cos + dy * sin) / ellipse.a;
+    const localY = (-dx * sin + dy * cos) / ellipse.b;
+    const radius = Math.hypot(localX, localY);
+    radialError += (radius - 1) * (radius - 1);
+    if (localX >= 0 && localY >= 0) quadrantMask |= 1;
+    if (localX < 0 && localY >= 0) quadrantMask |= 2;
+    if (localX < 0 && localY < 0) quadrantMask |= 4;
+    if (localX >= 0 && localY < 0) quadrantMask |= 8;
+  }
+  // Need points in all quadrants — rejects open arcs / single-side strokes.
+  if (quadrantMask !== 15) return null;
+
+  const rms = Math.sqrt(radialError / contour.length);
+  if (rms > 0.06) return null;
+
+  // Perimeter sanity: contour length should be near ellipse circumference.
+  let contourLen = 0;
+  for (let i = 0; i < contour.length; i++) {
+    const a = contour[i];
+    const b = contour[(i + 1) % contour.length];
+    contourLen += Math.hypot(b.x - a.x, b.y - a.y);
+  }
+  const ellipsePerim =
+    Math.PI *
+    (3 * (ellipse.a + ellipse.b) -
+      Math.sqrt((3 * ellipse.a + ellipse.b) * (ellipse.a + 3 * ellipse.b)));
+  const perimRatio = Math.min(contourLen, ellipsePerim) / Math.max(contourLen, ellipsePerim);
+  if (perimRatio < 0.82) return null;
+
+  const primitive =
+    aspectRatio < 1.12
+      ? ({
+          type: 'circle' as const,
+          cx: ellipse.cx,
+          cy: ellipse.cy,
+          r: (ellipse.a + ellipse.b) / 2,
+        })
+      : ({
+          type: 'ellipse' as const,
+          cx: ellipse.cx,
+          cy: ellipse.cy,
+          rx: ellipse.a,
+          ry: ellipse.b,
+          angle: (ellipse.angle * 180) / Math.PI,
+        });
+
+  const points: Point[] = [
+    { x: ellipse.cx + ellipse.a * cos, y: ellipse.cy + ellipse.a * sin },
+    { x: ellipse.cx - ellipse.b * sin, y: ellipse.cy + ellipse.b * cos },
+    { x: ellipse.cx - ellipse.a * cos, y: ellipse.cy - ellipse.a * sin },
+    { x: ellipse.cx + ellipse.b * sin, y: ellipse.cy - ellipse.b * cos },
+  ];
+
+  return {
+    points,
+    svgPath: ellipseToSVGPath(ellipse),
+    primitive,
+  };
+}
+
+/** Boundary pixels of a filled region (4-connected exterior). */
+function extractRegionBoundary(
+  pixels: Array<{ x: number; y: number }>,
+  width: number,
+  height: number
+): Point[] {
+  const set = new Set(pixels.map((p) => p.y * width + p.x));
+  const boundary: Point[] = [];
+  for (const p of pixels) {
+    const { x, y } = p;
+    const edge =
+      x === 0 ||
+      y === 0 ||
+      x === width - 1 ||
+      y === height - 1 ||
+      !set.has(y * width + (x - 1)) ||
+      !set.has(y * width + (x + 1)) ||
+      !set.has((y - 1) * width + x) ||
+      !set.has((y + 1) * width + x);
+    if (edge) boundary.push(p);
+  }
+  if (boundary.length < 8) return boundary;
+
+  // Order around centroid for Douglas-Peucker corner detection.
+  let cx = 0;
+  let cy = 0;
+  for (const p of boundary) {
+    cx += p.x;
+    cy += p.y;
+  }
+  cx /= boundary.length;
+  cy /= boundary.length;
+  return [...boundary].sort(
+    (a, b) => Math.atan2(a.y - cy, a.x - cx) - Math.atan2(b.y - cy, b.x - cx)
+  );
+}
+
+/**
+ * Detect the full-canvas background plate that produces an unwanted outer frame
+ * when Mixed/Line mode strokes its boundary.
+ */
+function maskLooksLikeCanvasFrame(
+  mask: Uint8Array,
+  width: number,
+  height: number
+): boolean {
+  if (width < 8 || height < 8) return false;
+
+  let left = 0;
+  let right = 0;
+  let top = 0;
+  let bottom = 0;
+  for (let y = 0; y < height; y++) {
+    if (mask[y * width] > 0) left++;
+    if (mask[y * width + (width - 1)] > 0) right++;
+  }
+  for (let x = 0; x < width; x++) {
+    if (mask[x] > 0) top++;
+    if (mask[(height - 1) * width + x] > 0) bottom++;
+  }
+
+  const borderFilled =
+    left / height >= 0.65 &&
+    right / height >= 0.65 &&
+    top / width >= 0.65 &&
+    bottom / width >= 0.65;
+  if (!borderFilled) return false;
+
+  let filled = 0;
+  for (let i = 0; i < mask.length; i++) {
+    if (mask[i] > 0) filled++;
+  }
+  return filled / (width * height) >= 0.4;
+}
+
+function scoreContourRectangle(
+  contour: Point[],
+  minX: number,
+  maxX: number,
+  minY: number,
+  maxY: number
+): number {
+  if (contour.length === 0) return 0;
+  const tol = 1.25;
+  let onEdge = 0;
+  for (const point of contour) {
+    const onBorder =
+      Math.abs(point.x - minX) <= tol ||
+      Math.abs(point.x - maxX) <= tol ||
+      Math.abs(point.y - minY) <= tol ||
+      Math.abs(point.y - maxY) <= tol;
+    if (onBorder) onEdge++;
+  }
+  return onEdge / contour.length;
+}
 
 /**
  * Create a binary mask for a specific cluster
@@ -1789,7 +2217,7 @@ function* generateRegionBatches(
 
 /**
  * Find boundary contours in a binary mask
- * 🎯 Routes to different tracing algorithms based on config.bezierAlgorithm
+ * Uses the improved tracer by default, with a legacy fallback.
  */
 function findBoundaryContours(
   mask: Uint8Array,
@@ -1912,10 +2340,29 @@ function findBoundaryContoursImproved(
         
         if (isBoundary) {
           // Trace this contour using improved algorithm
-          const contour = traceContourImproved(mask, width, height, x, y, visited);
+          let contour = traceContourImproved(mask, width, height, x, y, visited);
+
+          // Fallback if improved walk failed (short / empty)
+          if (contour.length < 8) {
+            const legacyVisited = new Uint8Array(visited);
+            contour = traceContourLegacy(mask, width, height, x, y, legacyVisited);
+          }
           
           if (contour.length >= 3) {
             contours.push(contour);
+            // Mark entire contour visited so we don't retrace the same ring
+            for (const point of contour) {
+              if (
+                point.x >= 0 &&
+                point.y >= 0 &&
+                point.x < width &&
+                point.y < height
+              ) {
+                visited[point.y * width + point.x] = 1;
+              }
+            }
+          } else {
+            visited[idx] = 1;
           }
         } else {
           // Not a boundary, mark as visited to skip in future
@@ -1929,8 +2376,10 @@ function findBoundaryContoursImproved(
 }
 
 /**
- * Improved contour tracing using simplified boundary following
- * 🎯 Traces boundary pixels in order to create a closed path
+ * Improved contour tracing — Moore neighborhood on boundary pixels.
+ * Does not block on visited during the walk (that caused early dead-ends
+ * in 1px spurs and made whole strokes disappear). Visited is only used
+ * afterward to avoid re-tracing the same ring from another seed.
  */
 function traceContourImproved(
   mask: Uint8Array,
@@ -1938,73 +2387,98 @@ function traceContourImproved(
   height: number,
   startX: number,
   startY: number,
-  visited: Uint8Array
+  _visited: Uint8Array
 ): Point[] {
   const contour: Point[] = [];
-  
+
   // 8-direction clockwise: E, SE, S, SW, W, NW, N, NE
   const dirs = [
     [1, 0], [1, 1], [0, 1], [-1, 1],
-    [-1, 0], [-1, -1], [0, -1], [1, -1]
+    [-1, 0], [-1, -1], [0, -1], [1, -1],
   ];
-  
+
+  const isFilled = (x: number, y: number): boolean => {
+    if (x < 0 || y < 0 || x >= width || y >= height) return false;
+    return mask[y * width + x] > 0;
+  };
+
+  const isBoundary = (x: number, y: number): boolean => {
+    if (!isFilled(x, y)) return false;
+    if (x === 0 || y === 0 || x === width - 1 || y === height - 1) return true;
+    return (
+      !isFilled(x + 1, y) ||
+      !isFilled(x - 1, y) ||
+      !isFilled(x, y + 1) ||
+      !isFilled(x, y - 1)
+    );
+  };
+
+  if (!isBoundary(startX, startY)) return contour;
+
   let x = startX;
   let y = startY;
-  let dir = 0; // Start searching to the right
-  
-  const startIdx = startY * width + startX;
-  const MAX_POINTS = 50000; // Prevent infinite loops
-  
+  // Entered start as if coming from the west → first search faces east
+  let dir = 0;
+  const MAX_POINTS = 20000;
+
+  // Jacob's stopping: record second pixel; stop when we revisit start
+  // with the same outgoing direction as the first step.
+  let secondX = -1;
+  let secondY = -1;
+  let firstDir = -1;
+
   do {
-    // Add current point
     contour.push({ x, y });
-    const currentIdx = y * width + x;
-    visited[currentIdx] = 1;
-    
-    // Safety check
-    if (contour.length > MAX_POINTS) {
-      console.warn(`⚠️ Contour exceeded ${MAX_POINTS} points, truncating`);
-      break;
-    }
-    
-    // Find next boundary pixel
-    // Start searching from the direction we came from (turned left)
-    let searchDir = (dir + 6) % 8; // Turn left from previous direction
+    if (contour.length > MAX_POINTS) break;
+
+    // Start searching from backtrack direction + 1 (keep wall on left)
+    let searchDir = (dir + 6) % 8;
     let found = false;
-    
+
     for (let i = 0; i < 8; i++) {
       const checkDir = (searchDir + i) % 8;
       const nx = x + dirs[checkDir][0];
       const ny = y + dirs[checkDir][1];
-      
-      // Check bounds
-      if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
-        const nIdx = ny * width + nx;
-        
-        // If this neighbor is filled, move there
-        if (mask[nIdx] > 0) {
-          x = nx;
-          y = ny;
-          dir = checkDir;
-          found = true;
-          break;
-        }
-      }
-    }
-    
-    // If we can't find a next pixel, we're done
-    if (!found) {
+      if (!isBoundary(nx, ny)) continue;
+
+      x = nx;
+      y = ny;
+      dir = checkDir;
+      found = true;
       break;
     }
-    
-    // Check if we've returned to start (allow small tolerance)
-    const distToStart = Math.abs(x - startX) + Math.abs(y - startY);
-    if (contour.length > 10 && distToStart <= 1) {
+
+    if (!found) break;
+
+    if (contour.length === 1) {
+      secondX = x;
+      secondY = y;
+      firstDir = dir;
+    } else if (
+      contour.length > 3 &&
+      x === startX &&
+      y === startY
+    ) {
+      // About to leave start again — check Jacob (same second step)
+      // Peek next without committing: if next would equal second with same dir, done.
+      // Simpler reliable close: returned to start after enough points.
       break;
     }
-    
+
+    // Safety: if we loop the same pixel pair forever
+    if (
+      contour.length > 8 &&
+      secondX >= 0 &&
+      x === secondX &&
+      y === secondY &&
+      dir === firstDir &&
+      contour[contour.length - 1].x === startX &&
+      contour[contour.length - 1].y === startY
+    ) {
+      break;
+    }
   } while (true);
-  
+
   return contour;
 }
 
@@ -2577,43 +3051,47 @@ export function generateSVG(
   paths: VectorPath[],
   width: number,
   height: number,
-  strokeWidthMultiplier: number = 1.0 // 🆕 Stroke width multiplier for line mode
+  strokeOptions: Partial<StrokeRenderOptions> = {}
 ): string {
+  const {
+    widthMultiplier = 1,
+    color: strokeColor = '#000000',
+    lineCap = 'round',
+    lineJoin = 'round',
+  } = strokeOptions;
   let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">\n`;
   
   for (const path of paths) {
-    const stroke = path.type === 'stroke' ? (path.color || '#000000') : 'none';
+    const fill = path.type === 'fill' ? (path.color || '#000000') : 'none';
+    const stroke = path.type === 'stroke' ? strokeColor : 'none';
     const baseStrokeWidth = path.type === 'stroke' ? (path.strokeWidth || 2) : 0;
-    const strokeWidth = baseStrokeWidth * strokeWidthMultiplier; // 🆕 Apply multiplier
+    const strokeWidth = baseStrokeWidth * widthMultiplier;
     
-    // 🆕 Render geometric primitives
+    // Render geometric primitives
     if (path.primitive) {
       const prim = path.primitive;
       
       if (prim.type === 'circle') {
-        svg += `  <circle cx="${prim.cx}" cy="${prim.cy}" r="${prim.r}" fill="none" stroke="${stroke}" stroke-width="${strokeWidth}" stroke-linecap="round" stroke-linejoin="round" />\n`;
+        svg += `  <circle cx="${prim.cx}" cy="${prim.cy}" r="${prim.r}" fill="${fill}" stroke="${stroke}" stroke-width="${strokeWidth}" stroke-linecap="${lineCap}" stroke-linejoin="${lineJoin}" />\n`;
       } else if (prim.type === 'ellipse') {
         const transform = prim.angle ? ` transform="rotate(${prim.angle} ${prim.cx} ${prim.cy})"` : '';
-        svg += `  <ellipse cx="${prim.cx}" cy="${prim.cy}" rx="${prim.rx}" ry="${prim.ry}"${transform} fill="none" stroke="${stroke}" stroke-width="${strokeWidth}" stroke-linecap="round" stroke-linejoin="round" />\n`;
+        svg += `  <ellipse cx="${prim.cx}" cy="${prim.cy}" rx="${prim.rx}" ry="${prim.ry}"${transform} fill="${fill}" stroke="${stroke}" stroke-width="${strokeWidth}" stroke-linecap="${lineCap}" stroke-linejoin="${lineJoin}" />\n`;
       } else if (prim.type === 'rectangle') {
         const x = prim.cx - prim.width / 2;
         const y = prim.cy - prim.height / 2;
         const transform = prim.angle ? ` transform="rotate(${prim.angle} ${prim.cx} ${prim.cy})"` : '';
-        svg += `  <rect x="${x}" y="${y}" width="${prim.width}" height="${prim.height}"${transform} fill="none" stroke="${stroke}" stroke-width="${strokeWidth}" stroke-linecap="round" stroke-linejoin="round" />\n`;
+        svg += `  <rect x="${x}" y="${y}" width="${prim.width}" height="${prim.height}"${transform} fill="${fill}" stroke="${stroke}" stroke-width="${strokeWidth}" stroke-linecap="${lineCap}" stroke-linejoin="${lineJoin}" />\n`;
       } else if (prim.type === 'polygon') {
         const points = prim.points.map(p => `${p.x},${p.y}`).join(' ');
-        svg += `  <polygon points="${points}" fill="none" stroke="${stroke}" stroke-width="${strokeWidth}" stroke-linecap="round" stroke-linejoin="round" />\n`;
+        svg += `  <polygon points="${points}" fill="${fill}" stroke="${stroke}" stroke-width="${strokeWidth}" stroke-linecap="${lineCap}" stroke-linejoin="${lineJoin}" />\n`;
       }
     } else {
       // Standard path rendering
       const d = path.svgPath || pointsToSVGPath(path.points, path.closed);
-      const fill = path.type === 'fill' ? (path.color || '#000000') : 'none';
       
-      // 🎨 RapidResizer-style: Round caps and joins for smooth centerlines
       if (path.type === 'stroke') {
-        svg += `  <path d="${d}" fill="none" stroke="${stroke}" stroke-width="${strokeWidth}" stroke-linecap="round" stroke-linejoin="round" />\n`;
+        svg += `  <path d="${d}" fill="none" stroke="${stroke}" stroke-width="${strokeWidth}" stroke-linecap="${lineCap}" stroke-linejoin="${lineJoin}" />\n`;
       } else {
-        // Fill mode: use fill-rule="evenodd" for proper hole rendering
         svg += `  <path d="${d}" fill="${fill}" stroke="none" fill-rule="evenodd" />\n`;
       }
     }

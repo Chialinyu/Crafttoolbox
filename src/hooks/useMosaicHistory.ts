@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback } from 'react';
 
 /**
  * History state for undo/redo functionality
@@ -24,6 +24,9 @@ export interface HistoryState {
   tileDepth: number;
 }
 
+/** Maximum undo/redo snapshots to keep in memory */
+export const MAX_HISTORY_STEPS = 40;
+
 /**
  * Custom hook for managing mosaic editing history (undo/redo)
  * @returns Object with history state and control functions
@@ -33,16 +36,20 @@ export const useMosaicHistory = () => {
   const [historyIndex, setHistoryIndex] = useState(-1);
 
   /**
-   * Add new state to history
-   * Clears any future history if we're not at the end
+   * Add new state to history.
+   * Clears any future history if we're not at the end.
+   * Caps length at MAX_HISTORY_STEPS by dropping oldest entries.
    */
   const addToHistory = useCallback((state: HistoryState) => {
     setHistory(prev => {
-      const newHistory = prev.slice(0, historyIndex + 1);
-      newHistory.push(state);
-      return newHistory;
+      const truncated = prev.slice(0, historyIndex + 1);
+      truncated.push(state);
+      if (truncated.length > MAX_HISTORY_STEPS) {
+        return truncated.slice(truncated.length - MAX_HISTORY_STEPS);
+      }
+      return truncated;
     });
-    setHistoryIndex(prev => prev + 1);
+    setHistoryIndex(prev => Math.min(prev + 1, MAX_HISTORY_STEPS - 1));
   }, [historyIndex]);
 
   /**

@@ -176,7 +176,7 @@ export function mergeColorGroups(
     }
     
     // 🎯 Find Morandi palette index, then map to sequential cluster ID
-    let clusterId = CLUSTER_LABELS.TRANSPARENT; // Default to transparent
+    let clusterId: number = CLUSTER_LABELS.TRANSPARENT; // Default to transparent
     for (let paletteIdx = 0; paletteIdx < morandiPalette.length; paletteIdx++) {
       const [pr, pg, pb] = morandiPalette[paletteIdx];
       if (pr === r && pg === g && pb === b) {

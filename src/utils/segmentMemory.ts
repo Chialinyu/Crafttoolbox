@@ -4,25 +4,17 @@
  * This module manages segment-based color modifications using spatial similarity.
  * Unlike color-to-color mapping, this tracks WHICH SPATIAL REGION was modified,
  * and maintains that modification across re-segmentation.
- * 
- * CHANGELOG:
- * 
- * [2026-01-16] Deduplication Integration
- * - Works seamlessly with MosaicGeneratorV2's new deduplication system
- * - applyModificationsToPalette() can now return duplicate colors
- * - MosaicGeneratorV2 handles deduplication after applying modifications
- * - Ensures user color changes persist through canvas resizing and color count changes
- * 
- * [Earlier] Core Features
+ *
+ * Core features:
  * - Spatial region tracking with IoU (Intersection over Union) similarity
  * - Normalized 100x100 mask comparison for aspect ratio independence
  * - Supports canvas size changes without losing user modifications
  */
 
 export interface SegmentMask {
-  // Binary mask of this segment (2D array of booleans)
-  // mask[y][x] = true if pixel (x,y) belongs to this segment
-  mask: boolean[][];
+  // Compact row-major binary mask: mask[y * width + x] is 0 or 1.
+  // Uint8Array avoids the large object overhead of boolean[][].
+  mask: Uint8Array;
   width: number;
   height: number;
 }
@@ -59,14 +51,12 @@ function calculateSegmentIoU(mask1: SegmentMask, mask2: SegmentMask): number {
   let intersection = 0;
   let union = 0;
   
-  for (let y = 0; y < STANDARD_SIZE; y++) {
-    for (let x = 0; x < STANDARD_SIZE; x++) {
-      const a = resized1[y]?.[x] ?? false;
-      const b = resized2[y]?.[x] ?? false;
-      
-      if (a && b) intersection++;
-      if (a || b) union++;
-    }
+  for (let i = 0; i < resized1.length; i++) {
+    const a = resized1[i];
+    const b = resized2[i];
+
+    if (a && b) intersection++;
+    if (a || b) union++;
   }
   
   const iou = union === 0 ? 0 : intersection / union;
@@ -78,8 +68,11 @@ function calculateSegmentIoU(mask1: SegmentMask, mask2: SegmentMask): number {
  * Resize a segment mask to fit within maxSize x maxSize, preserving aspect ratio
  * The mask is centered in the output space with padding
  */
-function resizeMaskPreserveAspect(mask: SegmentMask, maxSize: number): boolean[][] {
+function resizeMaskPreserveAspect(mask: SegmentMask, maxSize: number): Uint8Array {
   const { mask: originalMask, width: origWidth, height: origHeight } = mask;
+  if (origWidth <= 0 || origHeight <= 0) {
+    return new Uint8Array(maxSize * maxSize);
+  }
   
   // Calculate the scale factor to fit within maxSize x maxSize
   const scale = Math.min(maxSize / origWidth, maxSize / origHeight);
@@ -92,8 +85,8 @@ function resizeMaskPreserveAspect(mask: SegmentMask, maxSize: number): boolean[]
   const offsetX = Math.floor((maxSize - scaledWidth) / 2);
   const offsetY = Math.floor((maxSize - scaledHeight) / 2);
   
-  // Create output mask (initialized to false)
-  const resized: boolean[][] = Array(maxSize).fill(null).map(() => Array(maxSize).fill(false));
+  // Create compact row-major output mask (initialized to zero)
+  const resized = new Uint8Array(maxSize * maxSize);
   
   // Fill in the scaled mask with UNIFORM scaling
   for (let y = 0; y < scaledHeight; y++) {
@@ -102,8 +95,8 @@ function resizeMaskPreserveAspect(mask: SegmentMask, maxSize: number): boolean[]
       const srcX = Math.floor(x / scale);
       const srcY = Math.floor(y / scale);
       
-      const value = originalMask[srcY]?.[srcX] ?? false;
-      resized[offsetY + y][offsetX + x] = value;
+      const value = originalMask[srcY * origWidth + srcX] ?? 0;
+      resized[(offsetY + y) * maxSize + offsetX + x] = value;
     }
   }
   
@@ -118,13 +111,11 @@ function resizeMaskPreserveAspect(mask: SegmentMask, maxSize: number): boolean[]
 export function createSegmentMask(colorMap: number[][], segmentIndex: number): SegmentMask {
   const height = colorMap.length;
   const width = colorMap[0]?.length ?? 0;
-  
-  const mask: boolean[][] = [];
-  
+  const mask = new Uint8Array(width * height);
+
   for (let y = 0; y < height; y++) {
-    mask[y] = [];
     for (let x = 0; x < width; x++) {
-      mask[y][x] = colorMap[y][x] === segmentIndex;
+      mask[y * width + x] = colorMap[y][x] === segmentIndex ? 1 : 0;
     }
   }
   
@@ -142,7 +133,7 @@ function calculateCentroid(mask: SegmentMask): { x: number; y: number } {
   
   for (let y = 0; y < mask.height; y++) {
     for (let x = 0; x < mask.width; x++) {
-      if (mask.mask[y][x]) {
+      if (mask.mask[y * mask.width + x]) {
         sumX += x;
         sumY += y;
         count++;
@@ -153,19 +144,6 @@ function calculateCentroid(mask: SegmentMask): { x: number; y: number } {
   return count > 0 
     ? { x: sumX / count / mask.width, y: sumY / count / mask.height } 
     : { x: 0.5, y: 0.5 };
-}
-
-/**
- * Calculate the area (number of pixels) of a segment
- */
-function calculateArea(mask: SegmentMask): number {
-  let count = 0;
-  for (let y = 0; y < mask.height; y++) {
-    for (let x = 0; x < mask.width; x++) {
-      if (mask.mask[y][x]) count++;
-    }
-  }
-  return count;
 }
 
 /**

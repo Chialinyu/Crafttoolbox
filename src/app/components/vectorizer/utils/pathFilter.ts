@@ -3,7 +3,7 @@
  * Only removes OBVIOUS noise - never touches potentially real content
  */
 
-import type { VectorPath } from './vectorization';
+import type { VectorPath, Point } from './vectorization';
 
 export function filterInsignificantPaths(
   paths: VectorPath[],
@@ -14,68 +14,7 @@ export function filterInsignificantPaths(
   if (paths.length === 0) return paths;
   
   // Pre-calculate metrics for all paths
-  const pathMetrics = paths.map(path => {
-    // Calculate path length
-    let pathLength = 0;
-    for (let i = 1; i < path.points.length; i++) {
-      const dx = path.points[i].x - path.points[i - 1].x;
-      const dy = path.points[i].y - path.points[i - 1].y;
-      pathLength += Math.sqrt(dx * dx + dy * dy);
-    }
-    
-    // Calculate bounding box
-    let minX = Infinity, maxX = -Infinity;
-    let minY = Infinity, maxY = -Infinity;
-    for (const pt of path.points) {
-      minX = Math.min(minX, pt.x);
-      maxX = Math.max(maxX, pt.x);
-      minY = Math.min(minY, pt.y);
-      maxY = Math.max(maxY, pt.y);
-    }
-    const bboxWidth = maxX - minX;
-    const bboxHeight = maxY - minY;
-    const bboxArea = bboxWidth * bboxHeight;
-    
-    // Calculate center
-    let centerX = 0, centerY = 0;
-    for (const pt of path.points) {
-      centerX += pt.x;
-      centerY += pt.y;
-    }
-    centerX /= path.points.length;
-    centerY /= path.points.length;
-    
-    // 🆕 Calculate angle changes (detect V, X, W shapes)
-    let maxAngleChange = 0;
-    if (path.points.length >= 3) {
-      for (let i = 1; i < path.points.length - 1; i++) {
-        const dx1 = path.points[i].x - path.points[i - 1].x;
-        const dy1 = path.points[i].y - path.points[i - 1].y;
-        const dx2 = path.points[i + 1].x - path.points[i].x;
-        const dy2 = path.points[i + 1].y - path.points[i].y;
-        
-        const angle1 = Math.atan2(dy1, dx1);
-        const angle2 = Math.atan2(dy2, dx2);
-        let angleDiff = Math.abs(angle2 - angle1);
-        
-        // Normalize to 0-π
-        if (angleDiff > Math.PI) angleDiff = 2 * Math.PI - angleDiff;
-        
-        maxAngleChange = Math.max(maxAngleChange, angleDiff);
-      }
-    }
-    
-    return {
-      pathLength,
-      bboxWidth,
-      bboxHeight,
-      bboxArea,
-      centerX,
-      centerY,
-      pointCount: path.points.length,
-      maxAngleChange, // New!
-    };
-  });
+  const pathMetrics = paths.map(path => computePathMetrics(path));
   
   // ========================================
   // STEP 1: Remove TINY noise (ultra-conservative)
@@ -317,4 +256,397 @@ export function filterInsignificantPaths(
   }
   
   return finalFiltered;
+}
+
+// ============================================================================
+// Overlapping stroke dedupe — keep the smoother track
+// ============================================================================
+
+interface PathMetrics {
+  pathLength: number;
+  bboxWidth: number;
+  bboxHeight: number;
+  bboxArea: number;
+  centerX: number;
+  centerY: number;
+  pointCount: number;
+  maxAngleChange: number;
+  minX: number;
+  maxX: number;
+  minY: number;
+  maxY: number;
+}
+
+function computePathMetrics(path: VectorPath): PathMetrics {
+  const samples = samplePathPoints(path, 48);
+
+  let pathLength = 0;
+  for (let i = 1; i < samples.length; i++) {
+    pathLength += Math.hypot(
+      samples[i].x - samples[i - 1].x,
+      samples[i].y - samples[i - 1].y
+    );
+  }
+  if (path.closed && samples.length > 2) {
+    pathLength += Math.hypot(
+      samples[0].x - samples[samples.length - 1].x,
+      samples[0].y - samples[samples.length - 1].y
+    );
+  }
+
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+  let centerX = 0;
+  let centerY = 0;
+  for (const pt of samples) {
+    minX = Math.min(minX, pt.x);
+    maxX = Math.max(maxX, pt.x);
+    minY = Math.min(minY, pt.y);
+    maxY = Math.max(maxY, pt.y);
+    centerX += pt.x;
+    centerY += pt.y;
+  }
+  if (samples.length > 0) {
+    centerX /= samples.length;
+    centerY /= samples.length;
+  } else {
+    minX = maxX = minY = maxY = centerX = centerY = 0;
+  }
+
+  let maxAngleChange = 0;
+  if (samples.length >= 3) {
+    for (let i = 1; i < samples.length - 1; i++) {
+      const dx1 = samples[i].x - samples[i - 1].x;
+      const dy1 = samples[i].y - samples[i - 1].y;
+      const dx2 = samples[i + 1].x - samples[i].x;
+      const dy2 = samples[i + 1].y - samples[i].y;
+      const angle1 = Math.atan2(dy1, dx1);
+      const angle2 = Math.atan2(dy2, dx2);
+      let angleDiff = Math.abs(angle2 - angle1);
+      if (angleDiff > Math.PI) angleDiff = 2 * Math.PI - angleDiff;
+      maxAngleChange = Math.max(maxAngleChange, angleDiff);
+    }
+  }
+
+  const bboxWidth = Math.max(0, maxX - minX);
+  const bboxHeight = Math.max(0, maxY - minY);
+
+  return {
+    pathLength,
+    bboxWidth,
+    bboxHeight,
+    bboxArea: bboxWidth * bboxHeight,
+    centerX,
+    centerY,
+    pointCount: path.points.length || samples.length,
+    maxAngleChange,
+    minX,
+    maxX,
+    minY,
+    maxY,
+  };
+}
+
+/**
+ * Among overlapping stroke paths on the same track, keep the smoothest one.
+ * Typical cause: adjacent color regions each outline a shared edge — one via
+ * Potrace/Bezier, another via a denser polyline.
+ */
+export function dedupeOverlappingStrokePaths(paths: VectorPath[]): VectorPath[] {
+  if (paths.length < 2) return paths;
+
+  const fills = paths.filter((p) => p.type !== 'stroke');
+  const strokes = paths.filter((p) => p.type === 'stroke');
+  if (strokes.length < 2) return paths;
+
+  const samples = strokes.map((p) => samplePathPoints(p, 32));
+  const quality = strokes.map((p) => strokePathQuality(p));
+  const keep = new Array(strokes.length).fill(true);
+
+  for (let i = 0; i < strokes.length; i++) {
+    if (!keep[i] || samples[i].length < 2) continue;
+
+    for (let j = i + 1; j < strokes.length; j++) {
+      if (!keep[j] || samples[j].length < 2) continue;
+
+      if (!bboxOverlapLoose(strokes[i], strokes[j], samples[i], samples[j], 8)) {
+        continue;
+      }
+
+      const overlap =
+        (coverageScore(samples[i], samples[j], 4.5) +
+          coverageScore(samples[j], samples[i], 4.5)) /
+        2;
+
+      // Same track: majority of samples lie near the other path
+      if (overlap < 0.62) continue;
+
+      // Prefer higher-quality (smoother / primitive) stroke
+      if (quality[i] >= quality[j]) {
+        keep[j] = false;
+      } else {
+        keep[i] = false;
+        break;
+      }
+    }
+  }
+
+  const keptStrokes = strokes.filter((_, idx) => keep[idx]);
+  // Preserve original relative order: fills first (as emitted), then remaining strokes
+  // Re-merge by walking original paths order
+  const keptStrokeSet = new Set(keptStrokes);
+  const result: VectorPath[] = [];
+  for (const path of paths) {
+    if (path.type !== 'stroke') {
+      result.push(path);
+    } else if (keptStrokeSet.has(path)) {
+      result.push(path);
+      keptStrokeSet.delete(path); // in case of identical refs
+    }
+  }
+  return result;
+}
+
+function strokePathQuality(path: VectorPath): number {
+  let score = 0;
+  if (path.primitive) score += 1000;
+
+  const d = path.svgPath || '';
+  const cCount = (d.match(/\sC\s/g) || []).length;
+  const lCount = (d.match(/\sL\s/g) || []).length;
+  score += cCount * 8;
+  score -= lCount * 2;
+
+  // Fewer knots generally means cleaner vector curves
+  const knots = path.points.length || estimateKnotsFromSvg(d);
+  score -= Math.min(80, knots * 0.35);
+
+  // Prefer closed intentional shapes slightly
+  if (path.closed) score += 15;
+
+  return score;
+}
+
+function estimateKnotsFromSvg(d: string): number {
+  if (!d) return 0;
+  return (d.match(/[MLC]/g) || []).length;
+}
+
+function bboxOverlapLoose(
+  _a: VectorPath,
+  _b: VectorPath,
+  sa: Point[],
+  sb: Point[],
+  pad: number
+): boolean {
+  const ba = boundsOf(sa);
+  const bb = boundsOf(sb);
+  return !(
+    ba.maxX + pad < bb.minX ||
+    bb.maxX + pad < ba.minX ||
+    ba.maxY + pad < bb.minY ||
+    bb.maxY + pad < ba.minY
+  );
+}
+
+function boundsOf(pts: Point[]): {
+  minX: number;
+  maxX: number;
+  minY: number;
+  maxY: number;
+} {
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+  for (const p of pts) {
+    minX = Math.min(minX, p.x);
+    maxX = Math.max(maxX, p.x);
+    minY = Math.min(minY, p.y);
+    maxY = Math.max(maxY, p.y);
+  }
+  return { minX, maxX, minY, maxY };
+}
+
+/** Fraction of points in `from` that lie within `tol` of polyline `to`. */
+function coverageScore(from: Point[], to: Point[], tol: number): number {
+  if (from.length === 0 || to.length < 2) return 0;
+  let hits = 0;
+  for (const p of from) {
+    if (distanceToPolyline(p, to) <= tol) hits++;
+  }
+  return hits / from.length;
+}
+
+function distanceToPolyline(p: Point, poly: Point[]): number {
+  let best = Infinity;
+  for (let i = 0; i < poly.length - 1; i++) {
+    best = Math.min(best, distanceToSegment(p, poly[i], poly[i + 1]));
+  }
+  // Closed-ish: also check last→first when endpoints are close
+  if (poly.length > 2) {
+    const a = poly[0];
+    const b = poly[poly.length - 1];
+    if (Math.hypot(a.x - b.x, a.y - b.y) < 6) {
+      best = Math.min(best, distanceToSegment(p, b, a));
+    }
+  }
+  return best;
+}
+
+function distanceToSegment(p: Point, a: Point, b: Point): number {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const lenSq = dx * dx + dy * dy;
+  if (lenSq < 1e-8) return Math.hypot(p.x - a.x, p.y - a.y);
+  const t = Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / lenSq));
+  return Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy));
+}
+
+/**
+ * Sample points along a path for geometry comparison.
+ * Handles primitives, point arrays, and SVG path strings (Potrace).
+ */
+export function samplePathPoints(path: VectorPath, maxSamples: number = 32): Point[] {
+  if (path.primitive) {
+    return samplePrimitive(path.primitive, maxSamples);
+  }
+
+  if (path.points && path.points.length >= 2) {
+    return resamplePoints(path.points, maxSamples, path.closed);
+  }
+
+  if (path.svgPath) {
+    const extracted = extractPointsFromSvg(path.svgPath);
+    if (extracted.length >= 2) {
+      return resamplePoints(extracted, maxSamples, path.closed);
+    }
+  }
+
+  return path.points ? [...path.points] : [];
+}
+
+function samplePrimitive(
+  prim: NonNullable<VectorPath['primitive']>,
+  maxSamples: number
+): Point[] {
+  const n = Math.max(8, maxSamples);
+  if (prim.type === 'circle') {
+    const pts: Point[] = [];
+    for (let i = 0; i < n; i++) {
+      const a = (i / n) * Math.PI * 2;
+      pts.push({
+        x: prim.cx + prim.r * Math.cos(a),
+        y: prim.cy + prim.r * Math.sin(a),
+      });
+    }
+    return pts;
+  }
+  if (prim.type === 'ellipse') {
+    const pts: Point[] = [];
+    const rad = ((prim.angle || 0) * Math.PI) / 180;
+    const cos = Math.cos(rad);
+    const sin = Math.sin(rad);
+    for (let i = 0; i < n; i++) {
+      const a = (i / n) * Math.PI * 2;
+      const lx = prim.rx * Math.cos(a);
+      const ly = prim.ry * Math.sin(a);
+      pts.push({
+        x: prim.cx + lx * cos - ly * sin,
+        y: prim.cy + lx * sin + ly * cos,
+      });
+    }
+    return pts;
+  }
+  if (prim.type === 'rectangle') {
+    const hw = prim.width / 2;
+    const hh = prim.height / 2;
+    const rad = ((prim.angle || 0) * Math.PI) / 180;
+    const cos = Math.cos(rad);
+    const sin = Math.sin(rad);
+    const corners = [
+      { x: -hw, y: -hh },
+      { x: hw, y: -hh },
+      { x: hw, y: hh },
+      { x: -hw, y: hh },
+    ].map((p) => ({
+      x: prim.cx + p.x * cos - p.y * sin,
+      y: prim.cy + p.x * sin + p.y * cos,
+    }));
+    return resamplePoints(corners, maxSamples, true);
+  }
+  if (prim.type === 'polygon') {
+    return resamplePoints(prim.points, maxSamples, true);
+  }
+  return [];
+}
+
+function resamplePoints(points: Point[], maxSamples: number, closed: boolean): Point[] {
+  if (points.length <= maxSamples) return points;
+  const pts = closed && points.length > 2
+    ? [...points, points[0]]
+    : points;
+
+  let total = 0;
+  const segLens: number[] = [];
+  for (let i = 1; i < pts.length; i++) {
+    const len = Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y);
+    segLens.push(len);
+    total += len;
+  }
+  if (total < 1e-6) return points.slice(0, maxSamples);
+
+  const out: Point[] = [];
+  const step = total / maxSamples;
+  let target = 0;
+  let acc = 0;
+  let seg = 0;
+  out.push({ ...pts[0] });
+  for (let s = 1; s < maxSamples; s++) {
+    target = s * step;
+    while (seg < segLens.length && acc + segLens[seg] < target) {
+      acc += segLens[seg];
+      seg++;
+    }
+    if (seg >= segLens.length) {
+      out.push({ ...pts[pts.length - 1] });
+      continue;
+    }
+    const localT = (target - acc) / Math.max(1e-8, segLens[seg]);
+    const a = pts[seg];
+    const b = pts[seg + 1];
+    out.push({
+      x: a.x + (b.x - a.x) * localT,
+      y: a.y + (b.y - a.y) * localT,
+    });
+  }
+  return out;
+}
+
+function extractPointsFromSvg(d: string): Point[] {
+  const pts: Point[] = [];
+  // Capture coordinate pairs after M/L/C/Q commands (take endpoints of cubics)
+  const re = /([MLCQmlcq])([^MLCQmlcqZz]*)/g;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(d)) !== null) {
+    const cmd = match[1].toUpperCase();
+    const nums = (match[2].match(/-?\d*\.?\d+(?:e[-+]?\d+)?/gi) || []).map(Number);
+    if (cmd === 'M' || cmd === 'L') {
+      for (let i = 0; i + 1 < nums.length; i += 2) {
+        pts.push({ x: nums[i], y: nums[i + 1] });
+      }
+    } else if (cmd === 'C') {
+      // cubic: x1 y1 x2 y2 x y — keep endpoint
+      for (let i = 0; i + 5 < nums.length; i += 6) {
+        pts.push({ x: nums[i + 4], y: nums[i + 5] });
+      }
+    } else if (cmd === 'Q') {
+      for (let i = 0; i + 3 < nums.length; i += 4) {
+        pts.push({ x: nums[i + 2], y: nums[i + 3] });
+      }
+    }
+  }
+  return pts;
 }

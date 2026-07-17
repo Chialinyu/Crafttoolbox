@@ -83,6 +83,8 @@ export const MosaicCanvas = forwardRef<MosaicCanvasHandle, MosaicCanvasProps>(({
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [isPanning, setIsPanning] = useState(false);
   const [lastMousePos, setLastMousePos] = useState({ x: 0, y: 0 });
+  const [spacePressed, setSpacePressed] = useState(false);
+  const panMovedRef = useRef(false);
   const [hoveredTile, setHoveredTile] = useState<{ x: number; y: number } | null>(null);
 
   const getCanvasDpr = () => {
@@ -239,8 +241,14 @@ export const MosaicCanvas = forwardRef<MosaicCanvasHandle, MosaicCanvasProps>(({
    */
   const handleCanvasClick = (event: React.MouseEvent<HTMLCanvasElement>) => {
     event.stopPropagation(); // Prevent triggering handleOutsideClick
-    
+
     if (!onClick || !canvasRef.current || !containerRef.current) {
+      return;
+    }
+
+    // Ignore click that was part of a pan drag
+    if (panMovedRef.current) {
+      panMovedRef.current = false;
       return;
     }
 
@@ -348,9 +356,44 @@ export const MosaicCanvas = forwardRef<MosaicCanvasHandle, MosaicCanvasProps>(({
     setPan({ x: 0, y: 0 });
   };
 
+  // Space key enables pan while a color is selected (paint mode)
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.code === 'Space' && !(e.target instanceof HTMLInputElement) && !(e.target instanceof HTMLTextAreaElement)) {
+        e.preventDefault();
+        setSpacePressed(true);
+      }
+    };
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.code === 'Space') {
+        setSpacePressed(false);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keyup', onKeyUp);
+    };
+  }, []);
+
   const handleMouseDown = (e: React.MouseEvent) => {
-    if (e.button === 0) { // Left click
+    const isMiddle = e.button === 1;
+    const isLeft = e.button === 0;
+    const target = e.target as HTMLElement;
+    const onCanvas = Boolean(target.closest('canvas'));
+
+    // Paint mode: left-click on tiles paints; pan via middle-click, Space+drag, or drag empty area
+    const shouldPan =
+      isMiddle ||
+      (isLeft && spacePressed) ||
+      (isLeft && selectedColorGroup === null) ||
+      (isLeft && selectedColorGroup !== null && !onCanvas);
+
+    if (shouldPan) {
+      if (isMiddle) e.preventDefault();
       setIsPanning(true);
+      panMovedRef.current = false;
       setLastMousePos({ x: e.clientX, y: e.clientY });
     }
   };
@@ -359,12 +402,15 @@ export const MosaicCanvas = forwardRef<MosaicCanvasHandle, MosaicCanvasProps>(({
     if (isPanning) {
       const dx = e.clientX - lastMousePos.x;
       const dy = e.clientY - lastMousePos.y;
-      
+      if (Math.abs(dx) > 2 || Math.abs(dy) > 2) {
+        panMovedRef.current = true;
+      }
+
       setPan(prev => ({
         x: prev.x + dx,
         y: prev.y + dy,
       }));
-      
+
       setLastMousePos({ x: e.clientX, y: e.clientY });
     }
   };
@@ -372,6 +418,12 @@ export const MosaicCanvas = forwardRef<MosaicCanvasHandle, MosaicCanvasProps>(({
   const handleMouseUp = () => {
     setIsPanning(false);
   };
+
+  const canvasCursor = isPanning
+    ? 'grabbing'
+    : spacePressed || selectedColorGroup === null
+      ? 'grab'
+      : 'crosshair';
 
   // Handle wheel zoom with Ctrl/Cmd
   useEffect(() => {
@@ -568,7 +620,7 @@ export const MosaicCanvas = forwardRef<MosaicCanvasHandle, MosaicCanvasProps>(({
               onMouseMove={handleMouseMove}
               onMouseUp={handleMouseUp}
               onMouseLeave={handleMouseUp}
-              style={{ cursor: isPanning ? 'grabbing' : 'grab' }}
+              style={{ cursor: canvasCursor }}
             >
               <div
                 className="absolute inset-0 flex items-center justify-center"
@@ -579,10 +631,11 @@ export const MosaicCanvas = forwardRef<MosaicCanvasHandle, MosaicCanvasProps>(({
               >
                 <canvas 
                   ref={canvasRef} 
-                  className="shadow-lg cursor-pointer"
+                  className="shadow-lg"
                   style={{
                     display: 'block',
                     imageRendering: 'pixelated',
+                    cursor: canvasCursor,
                   }}
                   onClick={handleCanvasClick}
                   onMouseMove={handleCanvasHover}

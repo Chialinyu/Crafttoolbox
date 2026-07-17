@@ -84,9 +84,9 @@ export const trackToolUsage = (toolName: string, action: string, label?: string)
 };
 
 /**
- * 追蹤圖片上傳事件
+ * 追蹤圖片上傳事件（不傳送檔案大小／MIME 等敏感參數）
  */
-export const trackImageUpload = (toolName: string, fileSize?: number, fileType?: string): void => {
+export const trackImageUpload = (toolName: string, _fileSize?: number, _fileType?: string): void => {
   if (!window.gtag) return;
   
   try {
@@ -94,8 +94,6 @@ export const trackImageUpload = (toolName: string, fileSize?: number, fileType?:
       event_category: 'user_interaction',
       event_label: toolName,
       tool_name: toolName,
-      file_size: fileSize,
-      file_type: fileType,
     });
   } catch (error) {
     // Silently fail
@@ -103,9 +101,9 @@ export const trackImageUpload = (toolName: string, fileSize?: number, fileType?:
 };
 
 /**
- * 追蹤導出事件
+ * 追蹤導出事件（不傳送檔案大小）
  */
-export const trackExport = (toolName: string, format: string, fileSize?: number): void => {
+export const trackExport = (toolName: string, format: string, _fileSize?: number): void => {
   if (!window.gtag) return;
   
   try {
@@ -114,7 +112,6 @@ export const trackExport = (toolName: string, format: string, fileSize?: number)
       event_label: `${toolName}: ${format}`,
       tool_name: toolName,
       export_format: format,
-      file_size: fileSize,
     });
   } catch (error) {
     // Silently fail

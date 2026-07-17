@@ -36,9 +36,9 @@
  * ============================================================================
  */
 
+import chroma from 'chroma-js';
 import { CLUSTER_LABELS } from '../constants';
 import { evaluateSkeletonQuality } from './skeletonGraph';
-import { classifyRegions, visualizeClassifiedRegions } from './regionClassifier';
 
 /**
  * Convert image to grayscale
@@ -317,19 +317,29 @@ export interface PreprocessConfig {
   blurRadius: number;
   threshold: number;
   useAutoThreshold: boolean;
-  colorCount?: number; // For fill/mixed mode color clustering
+  colorCount?: number; // For fill/mixed and color-outline clustering
   mode?: 'line' | 'fill' | 'mixed';
+  lineStyle?: 'skeleton' | 'color-outline';
 }
 
 /**
- * K-means color clustering for multi-color vectorization
- * Optimized version with downsampling for faster preview
+ * Perceptual CIELAB k-means++ clustering for multi-color vectorization.
+ * Centroids are fitted on a representative sample, then every full-resolution
+ * pixel is assigned once. The external labels/RGB-centroid contract is unchanged.
  */
 function kMeansColorClustering(imageData: ImageData, k: number): { labels: Uint8Array; colors: number[][] } {
   const width = imageData.width;
   const height = imageData.height;
   const data = imageData.data;
-  
+
+  type Lab = [number, number, number];
+  const toLab = (r: number, g: number, b: number): Lab => {
+    const lab = chroma.rgb(r, g, b).lab();
+    return [lab[0], lab[1], lab[2]];
+  };
+  const labDistanceSquared = (a: Lab, b: Lab) =>
+    (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2;
+
   // Seeded random number generator for consistent results
   let seed = 12345; // Fixed seed for reproducibility
   const seededRandom = () => {
@@ -343,16 +353,16 @@ function kMeansColorClustering(imageData: ImageData, k: number): { labels: Uint8
   const sampledWidth = Math.round(width * scale);
   const sampledHeight = Math.round(height * scale);
   
-  // Sample pixels for clustering
-  const pixels: number[][] = [];
+  // Sample visible pixels in perceptual Lab space for clustering
+  const pixels: Lab[] = [];
   for (let y = 0; y < sampledHeight; y++) {
     for (let x = 0; x < sampledWidth; x++) {
-      const srcX = Math.round(x / scale);
-      const srcY = Math.round(y / scale);
+      const srcX = Math.min(width - 1, Math.round(x / scale));
+      const srcY = Math.min(height - 1, Math.round(y / scale));
       const idx = (srcY * width + srcX) * 4;
       
       if (data[idx + 3] > 128) { // Only visible pixels
-        pixels.push([data[idx], data[idx + 1], data[idx + 2]]);
+        pixels.push(toLab(data[idx], data[idx + 1], data[idx + 2]));
       }
     }
   }
@@ -361,20 +371,20 @@ function kMeansColorClustering(imageData: ImageData, k: number): { labels: Uint8
     return { labels: new Uint8Array(width * height), colors: [] };
   }
   
-  // Initialize centroids with k-means++ (using seeded random)
-  const centroids: number[][] = [];
+  const clusterCount = Math.min(k, pixels.length);
+
+  // Initialize Lab centroids with k-means++ (using seeded random)
+  const centroids: Lab[] = [];
   const firstIdx = Math.floor(seededRandom() * pixels.length);
   centroids.push([...pixels[firstIdx]]);
   
-  for (let i = 1; i < k; i++) {
+  for (let i = 1; i < clusterCount; i++) {
     const distances = pixels.map(pixel => {
-      const minDist = Math.min(...centroids.map(c => 
-        Math.sqrt((pixel[0] - c[0]) ** 2 + (pixel[1] - c[1]) ** 2 + (pixel[2] - c[2]) ** 2)
-      ));
-      return minDist * minDist;
+      return Math.min(...centroids.map(c => labDistanceSquared(pixel, c)));
     });
     
     const sum = distances.reduce((a, b) => a + b, 0);
+    if (sum <= 0) break;
     let target = seededRandom() * sum;
     
     for (let j = 0; j < distances.length; j++) {
@@ -386,98 +396,79 @@ function kMeansColorClustering(imageData: ImageData, k: number): { labels: Uint8
     }
   }
   
-  // Optimization 2: Reduce iterations and add early stopping
-  const maxIterations = 8; // Reduced from 20
-  const labels = new Uint8Array(width * height);
-  
-  // 🎯 CRITICAL: Initialize transparent pixels with special label (CLUSTER_LABELS.TRANSPARENT)
-  // This prevents transparent background from being treated as cluster 0
-  for (let i = 0; i < width * height; i++) {
-    if (data[i * 4 + 3] <= 128) {
-      labels[i] = CLUSTER_LABELS.TRANSPARENT; // Special label for transparent pixels
-    }
-  }
-  
+  // Fit centroids on the representative sample in Lab.
+  const maxIterations = 12;
+  const sampleLabels = new Uint8Array(pixels.length);
   for (let iter = 0; iter < maxIterations; iter++) {
     const oldCentroids = centroids.map(c => [...c]);
-    
-    // Assign labels to full resolution image
-    let pixelIdx = 0;
-    for (let y = 0; y < height; y++) {
-      for (let x = 0; x < width; x++) {
-        const i = pixelIdx * 4;
-        if (data[i + 3] > 128) {
-          const pixel = [data[i], data[i + 1], data[i + 2]];
-          let minDist = Infinity;
-          let bestCluster = 0;
-          
-          for (let c = 0; c < k; c++) {
-            const dist = Math.sqrt(
-              (pixel[0] - centroids[c][0]) ** 2 + 
-              (pixel[1] - centroids[c][1]) ** 2 + 
-              (pixel[2] - centroids[c][2]) ** 2
-            );
-            if (dist < minDist) {
-              minDist = dist;
-              bestCluster = c;
-            }
-          }
-          
-          labels[pixelIdx] = bestCluster;
+
+    for (let i = 0; i < pixels.length; i++) {
+      let bestCluster = 0;
+      let minDistance = Infinity;
+      for (let c = 0; c < centroids.length; c++) {
+        const distance = labDistanceSquared(pixels[i], centroids[c]);
+        if (distance < minDistance) {
+          minDistance = distance;
+          bestCluster = c;
         }
-        // else: keep label = 255 for transparent pixels
-        pixelIdx++;
       }
+      sampleLabels[i] = bestCluster;
     }
     
-    // Update centroids
-    const sums = Array.from({ length: k }, () => [0, 0, 0]);
-    const counts = new Array(k).fill(0);
-    
-    pixelIdx = 0;
-    for (let i = 0; i < data.length; i += 4) {
-      if (data[i + 3] > 128) {
-        const cluster = labels[pixelIdx];
-        sums[cluster][0] += data[i];
-        sums[cluster][1] += data[i + 1];
-        sums[cluster][2] += data[i + 2];
-        counts[cluster]++;
-      }
-      pixelIdx++;
+    const sums: Lab[] = centroids.map(() => [0, 0, 0]);
+    const counts = new Uint32Array(centroids.length);
+    for (let i = 0; i < pixels.length; i++) {
+      const cluster = sampleLabels[i];
+      sums[cluster][0] += pixels[i][0];
+      sums[cluster][1] += pixels[i][1];
+      sums[cluster][2] += pixels[i][2];
+      counts[cluster]++;
     }
     
-    for (let c = 0; c < k; c++) {
+    for (let c = 0; c < centroids.length; c++) {
       if (counts[c] > 0) {
         centroids[c] = [
-          Math.round(sums[c][0] / counts[c]),
-          Math.round(sums[c][1] / counts[c]),
-          Math.round(sums[c][2] / counts[c])
+          sums[c][0] / counts[c],
+          sums[c][1] / counts[c],
+          sums[c][2] / counts[c],
         ];
       }
     }
     
-    // Early stopping: check if centroids changed significantly
     let maxChange = 0;
-    for (let c = 0; c < k; c++) {
-      const change = Math.sqrt(
-        (centroids[c][0] - oldCentroids[c][0]) ** 2 +
-        (centroids[c][1] - oldCentroids[c][1]) ** 2 +
-        (centroids[c][2] - oldCentroids[c][2]) ** 2
-      );
+    for (let c = 0; c < centroids.length; c++) {
+      const change = Math.sqrt(labDistanceSquared(centroids[c], oldCentroids[c] as Lab));
       maxChange = Math.max(maxChange, change);
     }
     
-    // Stop if centroids barely changed
-    if (maxChange < 2) {
-      break;
+    if (maxChange < 0.5) break;
+  }
+
+  // Assign full-resolution pixels once using the fitted Lab centroids.
+  const labels = new Uint8Array(width * height);
+  labels.fill(CLUSTER_LABELS.TRANSPARENT);
+  for (let pixelIdx = 0; pixelIdx < width * height; pixelIdx++) {
+    const offset = pixelIdx * 4;
+    if (data[offset + 3] <= 128) continue;
+
+    const pixelLab = toLab(data[offset], data[offset + 1], data[offset + 2]);
+    let bestCluster = 0;
+    let minDistance = Infinity;
+    for (let c = 0; c < centroids.length; c++) {
+      const distance = labDistanceSquared(pixelLab, centroids[c]);
+      if (distance < minDistance) {
+        minDistance = distance;
+        bestCluster = c;
+      }
     }
+    labels[pixelIdx] = bestCluster;
   }
   
   // Sort clusters by pixel count (largest first) to maintain color consistency
-  const clusterCounts = new Array(k).fill(0);
+  const clusterCounts = new Array(centroids.length).fill(0);
   for (let i = 0; i < labels.length; i++) {
     // 🎯 Only count real clusters, skip transparent pixels (label = 255)
-    if (labels[i] < k) {
+    if (labels[i] < centroids.length) {
       clusterCounts[labels[i]]++;
     }
   }
@@ -505,7 +496,10 @@ function kMeansColorClustering(imageData: ImageData, k: number): { labels: Uint8
   }
   
   // Remap centroids to sorted order
-  const sortedCentroids = sortedIndices.map(idx => centroids[idx]);
+  const sortedCentroids = sortedIndices.map(idx => {
+    const rgb = chroma.lab(...centroids[idx]).rgb();
+    return rgb.map(value => Math.max(0, Math.min(255, Math.round(value))));
+  });
   
   return { labels: sortedLabels, colors: sortedCentroids };
 }
@@ -526,6 +520,54 @@ const morandiPalette = [
   [172, 184, 177], // #ACB8B1 - Sage
   [201, 179, 169], // #C9B3A9 - Taupe
 ];
+
+function renderClusterPreview(
+  source: ImageData,
+  labels: Uint8Array,
+  clusterCount: number,
+  style: 'fill' | 'outline' | 'fill-outline'
+): ImageData {
+  const { width, height } = source;
+  const output = new ImageData(width, height);
+
+  for (let index = 0; index < labels.length; index++) {
+    const offset = index * 4;
+    const cluster = labels[index];
+    if (cluster >= clusterCount || source.data[offset + 3] <= 128) continue;
+
+    const x = index % width;
+    const y = Math.floor(index / width);
+    const isBoundary =
+      x === 0 ||
+      y === 0 ||
+      x === width - 1 ||
+      y === height - 1 ||
+      labels[index - 1] !== cluster ||
+      labels[index + 1] !== cluster ||
+      labels[index - width] !== cluster ||
+      labels[index + width] !== cluster;
+
+    if (style !== 'fill' && isBoundary) {
+      output.data[offset] = 0;
+      output.data[offset + 1] = 0;
+      output.data[offset + 2] = 0;
+      output.data[offset + 3] = 255;
+    } else if (style !== 'outline') {
+      const color = morandiPalette[cluster % morandiPalette.length];
+      output.data[offset] = color[0];
+      output.data[offset + 1] = color[1];
+      output.data[offset + 2] = color[2];
+      output.data[offset + 3] = 255;
+    } else {
+      output.data[offset] = 255;
+      output.data[offset + 1] = 255;
+      output.data[offset + 2] = 255;
+      output.data[offset + 3] = 255;
+    }
+  }
+
+  return output;
+}
 
 /**
  * Preprocessing result with optional cluster information
@@ -553,111 +595,10 @@ export function preprocessImage(
     }
     
     // Step 2: 🎯 Use COLOR CLUSTERING instead of binarization
-    const { labels, colors } = kMeansColorClustering(processed, config.colorCount);
+    const { labels } = kMeansColorClustering(processed, config.colorCount);
     
-    // Step 3: 🎯 Classify each COLOR CLUSTER by shape
-    // Create a map: cluster ID -> region type (line/fill)
-    const clusterTypes = new Map<number, 'line' | 'fill'>();
-    
-    for (let clusterId = 0; clusterId < config.colorCount; clusterId++) {
-      // Collect all pixels belonging to this cluster
-      const clusterPixels: number[] = [];
-      for (let i = 0; i < labels.length; i++) {
-        if (labels[i] === clusterId) {
-          clusterPixels.push(i);
-        }
-      }
-      
-      if (clusterPixels.length === 0) {
-        clusterTypes.set(clusterId, 'fill');
-        continue;
-      }
-      
-      // Analyze shape of this cluster
-      const { width, height } = processed;
-      
-      // Calculate bounding box
-      let minX = width, maxX = 0, minY = height, maxY = 0;
-      for (const idx of clusterPixels) {
-        const x = idx % width;
-        const y = Math.floor(idx / width);
-        minX = Math.min(minX, x);
-        maxX = Math.max(maxX, x);
-        minY = Math.min(minY, y);
-        maxY = Math.max(maxY, y);
-      }
-      
-      const regionWidth = maxX - minX + 1;
-      const regionHeight = maxY - minY + 1;
-      const aspectRatio = Math.max(regionWidth, regionHeight) / Math.min(regionWidth, regionHeight);
-      
-      // Calculate average thickness
-      const bboxPerimeter = 2 * (regionWidth + regionHeight);
-      const avgThickness = (clusterPixels.length / bboxPerimeter) || 1;
-      
-      // Calculate perimeter/area ratio
-      let perimeterPixels = 0;
-      for (const idx of clusterPixels) {
-        const x = idx % width;
-        const y = Math.floor(idx / width);
-        
-        // Check if this pixel is on boundary (any neighbor is different cluster or transparent)
-        const neighbors = [
-          y > 0 ? labels[(y - 1) * width + x] : 255,
-          y < height - 1 ? labels[(y + 1) * width + x] : 255,
-          x > 0 ? labels[y * width + (x - 1)] : 255,
-          x < width - 1 ? labels[y * width + (x + 1)] : 255,
-        ];
-        
-        if (neighbors.some(n => n !== clusterId)) {
-          perimeterPixels++;
-        }
-      }
-      const perimeterAreaRatio = perimeterPixels / clusterPixels.length;
-      
-      // Classify as line or fill
-      // 🎯 针对粗线条 icon 的宽松阈值
-      const isLine = (
-        (aspectRatio > 1.8 && avgThickness < 150) ||  // 🔧 超宽松: 允许很粗的线条
-        perimeterAreaRatio > 0.35 ||                   
-        (aspectRatio > 2.0)                            // 🔧 只要稍微细长就算线条
-      ) && clusterPixels.length > 15 && clusterPixels.length < 3000000; // 🔧 允许超大面积
-      
-      clusterTypes.set(clusterId, isLine ? 'line' : 'fill');
-    }
-    
-    // Step 4: Visualize - line clusters as black, fill clusters as Morandi colors
-    const output = new ImageData(processed.width, processed.height);
-    for (let i = 0; i < labels.length; i++) {
-      const cluster = labels[i];
-      const pixelIdx = i * 4;
-      
-      // Skip transparent pixels
-      if (cluster >= config.colorCount || processed.data[pixelIdx + 3] < 128) {
-        output.data[pixelIdx] = 255;
-        output.data[pixelIdx + 1] = 255;
-        output.data[pixelIdx + 2] = 255;
-        output.data[pixelIdx + 3] = 0;
-        continue;
-      }
-      
-      const type = clusterTypes.get(cluster);
-      
-      if (type === 'line') {
-        // Black stroke
-        output.data[pixelIdx] = 0;
-        output.data[pixelIdx + 1] = 0;
-        output.data[pixelIdx + 2] = 0;
-        output.data[pixelIdx + 3] = 255;
-      } else {
-        // Morandi color fill
-        const color = morandiPalette[cluster % morandiPalette.length];
-        output.data[pixelIdx] = color[0];
-        output.data[pixelIdx + 1] = color[1];
-        output.data[pixelIdx + 2] = color[2];
-        output.data[pixelIdx + 3] = 255;
-      }
-    }
+    // Mixed mode is explicitly filled regions plus their outlines.
+    const output = renderClusterPreview(processed, labels, config.colorCount, 'fill-outline');
     
     return {
       imageData: output,
@@ -674,6 +615,15 @@ export function preprocessImage(
     let processed = imageData;
     if (config.blurRadius > 0) {
       processed = gaussianBlur(processed, config.blurRadius);
+    }
+
+    if (config.lineStyle === 'color-outline' && config.colorCount && config.colorCount > 1) {
+      const { labels } = kMeansColorClustering(processed, config.colorCount);
+      return {
+        imageData: renderClusterPreview(processed, labels, config.colorCount, 'outline'),
+        labels,
+        clusterCount: config.colorCount,
+      };
     }
     
     // Convert to grayscale
@@ -727,7 +677,7 @@ export function preprocessImage(
     }
     
     // Step 2: Color clustering
-    const { labels, colors } = kMeansColorClustering(processed, config.colorCount);
+    const { labels } = kMeansColorClustering(processed, config.colorCount);
     
     // Step 3: Create output with Morandi colors for visualization
     const output = new ImageData(imageData.width, imageData.height);
@@ -762,7 +712,7 @@ export function preprocessImage(
     };
   }
   
-  // For line mode - use original binary processing
+  // Fallback path (e.g. mixed without clustering) — grayscale + binarize
   // Step 1: Convert to grayscale
   let processed = toGrayscale(imageData);
   
@@ -777,8 +727,8 @@ export function preprocessImage(
   // Step 4: Binarize
   processed = binarize(processed, threshold);
   
-  // Step 5: 🎯 AUTO-DETECT and invert if needed (only for line mode)
-  if (mode === 'line') {
+  // Step 5: AUTO-DETECT and invert if needed
+  {
     const { width, height, data } = processed;
     
     // Extract binary data for evaluation
@@ -810,7 +760,6 @@ export function preprocessImage(
     }
   }
   
-  // 🎯 Line mode doesn't need labels
   return {
     imageData: processed,
   };

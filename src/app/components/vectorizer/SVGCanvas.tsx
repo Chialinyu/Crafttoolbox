@@ -2,7 +2,12 @@ import React, { useRef, useEffect, useLayoutEffect, useState, forwardRef, useImp
 import { useLanguage } from '../../contexts/LanguageContext';
 import { ZoomIn, ZoomOut, Maximize2 } from 'lucide-react';
 import { Button } from '../ui/button';
-import { VectorPath, pointsToSVGPath } from './utils/vectorization';
+import {
+  VectorPath,
+  pointsToSVGPath,
+  type StrokeLineCap,
+  type StrokeLineJoin,
+} from './utils/vectorization';
 
 interface SVGCanvasProps {
   originalImage: HTMLImageElement | null;
@@ -19,6 +24,9 @@ interface SVGCanvasProps {
   hiddenPathIndices?: number[];
   isProcessing?: boolean; // NEW: Loading state for long computations
   strokeWidthMultiplier?: number; // 🆕 Global stroke width multiplier
+  strokeColor?: string;
+  strokeLineCap?: StrokeLineCap;
+  strokeLineJoin?: StrokeLineJoin;
 }
 
 // ✨ Exposed ref methods for direct canvas updates
@@ -50,6 +58,9 @@ export const SVGCanvas = forwardRef<SVGCanvasRef, SVGCanvasProps>(({
   hiddenPathIndices = [],
   isProcessing = false, // NEW: Loading state for long computations
   strokeWidthMultiplier = 1, // 🆕 Default multiplier is 1
+  strokeColor = '#000000',
+  strokeLineCap = 'round',
+  strokeLineJoin = 'round',
 }, ref) => {
   const { t } = useLanguage();
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -472,13 +483,24 @@ export const SVGCanvas = forwardRef<SVGCanvasRef, SVGCanvasProps>(({
                     const isSelected = selectedPathIndices.includes(index);
                     const isHovered = hoveredPathIndex === index;
                     
-                    const strokeColor = isSelected ? '#2563eb' : isHovered ? '#f59e0b' : (path.color || '#A89F91');
+                    const fillColor = path.type === 'fill' ? (path.color || '#E8B4B8') : 'none';
+                    const resolvedStrokeColor = isSelected
+                      ? '#2563eb'
+                      : isHovered
+                        ? '#f59e0b'
+                        : path.type === 'stroke'
+                          ? strokeColor
+                          : 'none';
                     const baseStrokeWidth = path.strokeWidth || (path.type === 'stroke' ? 2 : 0.5);
-                    const strokeWidth = (isSelected || isHovered ? Math.max(baseStrokeWidth, 3) : baseStrokeWidth) * strokeWidthMultiplier;
+                    const strokeWidth = isSelected || isHovered
+                      ? Math.max(baseStrokeWidth, 3) * strokeWidthMultiplier
+                      : path.type === 'stroke'
+                        ? baseStrokeWidth * strokeWidthMultiplier
+                        : 0;
                     const opacity = isSelected ? 1 : isHovered ? 0.9 : 0.8;
                     const filter = isSelected ? 'drop-shadow(0 0 8px rgba(37, 99, 235, 0.5))' : isHovered ? 'drop-shadow(0 0 6px rgba(245, 158, 11, 0.5))' : undefined;
                     
-                    // 🆕 Render geometric primitives
+                    // Render geometric primitives
                     if (path.primitive) {
                       const prim = path.primitive;
                       
@@ -489,10 +511,10 @@ export const SVGCanvas = forwardRef<SVGCanvasRef, SVGCanvasProps>(({
                             cx={prim.cx}
                             cy={prim.cy}
                             r={prim.r}
-                            fill="none"
-                            stroke={strokeColor}
+                            fill={fillColor}
+                            stroke={resolvedStrokeColor}
                             strokeWidth={strokeWidth}
-                            strokeLinecap="round"
+                            strokeLinecap={strokeLineCap}
                             opacity={opacity}
                             filter={filter}
                           />
@@ -506,10 +528,10 @@ export const SVGCanvas = forwardRef<SVGCanvasRef, SVGCanvasProps>(({
                             rx={prim.rx}
                             ry={prim.ry}
                             transform={prim.angle ? `rotate(${prim.angle} ${prim.cx} ${prim.cy})` : undefined}
-                            fill="none"
-                            stroke={strokeColor}
+                            fill={fillColor}
+                            stroke={resolvedStrokeColor}
                             strokeWidth={strokeWidth}
-                            strokeLinecap="round"
+                            strokeLinecap={strokeLineCap}
                             opacity={opacity}
                             filter={filter}
                           />
@@ -525,11 +547,11 @@ export const SVGCanvas = forwardRef<SVGCanvasRef, SVGCanvasProps>(({
                             width={prim.width}
                             height={prim.height}
                             transform={prim.angle ? `rotate(${prim.angle} ${prim.cx} ${prim.cy})` : undefined}
-                            fill="none"
-                            stroke={strokeColor}
+                            fill={fillColor}
+                            stroke={resolvedStrokeColor}
                             strokeWidth={strokeWidth}
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
+                            strokeLinecap={strokeLineCap}
+                            strokeLinejoin={strokeLineJoin}
                             opacity={opacity}
                             filter={filter}
                           />
@@ -540,11 +562,11 @@ export const SVGCanvas = forwardRef<SVGCanvasRef, SVGCanvasProps>(({
                           <polygon
                             key={index}
                             points={points}
-                            fill="none"
-                            stroke={strokeColor}
+                            fill={fillColor}
+                            stroke={resolvedStrokeColor}
                             strokeWidth={strokeWidth}
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
+                            strokeLinecap={strokeLineCap}
+                            strokeLinejoin={strokeLineJoin}
                             opacity={opacity}
                             filter={filter}
                           />
@@ -557,12 +579,12 @@ export const SVGCanvas = forwardRef<SVGCanvasRef, SVGCanvasProps>(({
                       <path
                         key={index}
                         d={path.svgPath || pointsToSVGPath(path.points, path.closed)}
-                        fill={path.type === 'fill' ? (path.color || '#E8B4B8') : 'none'}
+                        fill={fillColor}
                         fillRule="evenodd"
-                        stroke={strokeColor}
+                        stroke={resolvedStrokeColor}
                         strokeWidth={strokeWidth}
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
+                        strokeLinecap={strokeLineCap}
+                        strokeLinejoin={strokeLineJoin}
                         opacity={opacity}
                         filter={filter}
                       />

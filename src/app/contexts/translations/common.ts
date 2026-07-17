@@ -10,6 +10,8 @@ export const commonTranslations = {
   upload: { zh: '上傳', en: 'Upload' },
   download: { zh: '下載', en: 'Download' },
   copy: { zh: '複製', en: 'Copy' },
+  undo: { zh: '復原', en: 'Undo' },
+  redo: { zh: '重做', en: 'Redo' },
   reset: { zh: '重置', en: 'Reset' },
   apply: { zh: '應用', en: 'Apply' },
   cancel: { zh: '取消', en: 'Cancel' },
@@ -28,6 +30,8 @@ export const commonTranslations = {
   copyError: { zh: '複製失敗', en: 'Copy failed' },
   copying: { zh: '複製中...', en: 'Copying...' },
   pngCopyNotSupported: { zh: 'PNG 圖片複製功能在此環境中受限，請使用下載功能', en: 'PNG copy is restricted in this environment. Please use download instead.' },
+  noToolsFound: { zh: '沒有找到相關工具', en: 'No tools found' },
+  vectorizationFailed: { zh: '向量化失敗，請再試一次', en: 'Vectorization failed. Please try again.' },
   
   // Common UI
   loading: { zh: '載入中...', en: 'Loading...' },

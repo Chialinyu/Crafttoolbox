@@ -39,7 +39,7 @@ export function buildSkeletonGraph(
   skeleton: Uint8Array,
   width: number,
   height: number,
-  distanceMap?: Uint8Array
+  distanceMap?: Uint8Array | Float32Array
 ): SkeletonGraph {
   // Step 1: Identify nodes (endpoints and junctions)
   const nodes: SkeletonNode[] = [];

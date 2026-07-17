@@ -11,7 +11,8 @@
  */
 
 import type { VectorPath, Point } from './vectorization';
-import { gaussianBlur, simplifyPath, pointsToSmoothBezierPath, pointsToSVGPath } from './vectorization';
+import { gaussianBlur, pointsToSVGPath } from './vectorization';
+import { contourToSmoothBezierPath } from './pathSmoothing';
 import { detectCircleOrEllipse } from './ellipseFitting';
 import { detectRectangle, detectTriangle } from './rectangleFitting';
 import { buildSkeletonGraph, pruneSkeletonGraph, graphToSkeleton } from './skeletonGraph';
@@ -55,26 +56,26 @@ export async function processStrokeMode(
     // Try different primitive detectors in order of priority
     let primitive = null;
     let strokeWidth = 2;
-    
-    // 1. Try circle/ellipse first (most common)
-    primitive = detectCircleOrEllipse(shape.pixels);
+
+    // 1. Solid rectangle/square first (high fill ratio) — avoid misclassifying as circle
+    primitive = detectRectangle(shape.pixels);
     if (primitive) {
-      const avgRadius = primitive.type === 'circle' 
-        ? primitive.r 
-        : (primitive.rx + primitive.ry) / 2;
-      strokeWidth = Math.max(2, Math.round(avgRadius * 0.15));
+      const avgSize = (primitive.width + primitive.height) / 2;
+      strokeWidth = Math.max(2, Math.round(avgSize * 0.08));
     }
-    
-    // 2. Try rectangle/square
+
+    // 2. Circle / ellipse
     if (!primitive) {
-      primitive = detectRectangle(shape.pixels);
+      primitive = detectCircleOrEllipse(shape.pixels);
       if (primitive) {
-        const avgSize = (primitive.width + primitive.height) / 2;
-        strokeWidth = Math.max(2, Math.round(avgSize * 0.08));
+        const avgRadius = primitive.type === 'circle'
+          ? primitive.r
+          : (primitive.rx + primitive.ry) / 2;
+        strokeWidth = Math.max(2, Math.round(avgRadius * 0.15));
       }
     }
-    
-    // 3. Try triangle
+
+    // 3. Triangle
     if (!primitive) {
       primitive = detectTriangle(shape.pixels);
       if (primitive) {
@@ -168,17 +169,16 @@ export async function processStrokeMode(
     const smoothedWidths = smoothWidthArray(widths, 5);
     const avgWidth = smoothedWidths.reduce((sum, w) => sum + w, 0) / smoothedWidths.length;
     
-    // Simplify path
+    // Fitted cubic Bezier (clean + smooth + simplify)
     let points = skPath.points;
-    if (simplify && tolerance > 0) {
-      points = simplifyPath(points, tolerance * 2);
-    }
-    
-    // Generate smooth bezier
     let svgPath: string | undefined;
     if (points.length >= 3) {
       try {
-        svgPath = pointsToSmoothBezierPath(points, false);
+        // Map simplify off → higher precision keep; otherwise use ~70 default feel
+        const precision = simplify ? Math.max(20, 100 - tolerance * 100) : 90;
+        const fitted = contourToSmoothBezierPath(points, false, precision);
+        points = fitted.points;
+        svgPath = fitted.svgPath;
       } catch (e) {
         svgPath = pointsToSVGPath(points, false);
       }

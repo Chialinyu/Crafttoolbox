@@ -1,62 +1,82 @@
 /**
  * Color Utilities for Mosaic Generator
  * Centralized color manipulation and quantization functions
+ *
+ * Palette extraction uses CIELAB + k-means++ (design-tool style),
+ * not RGB median-cut — distances match human perception better.
  */
+
+import chroma from 'chroma-js';
+
+/**
+ * Parse any supported color string to [r, g, b]
+ * Supports: rgb(...), #RRGGBB, "r,g,b"
+ */
+export const parseColorToRgb = (color: string): [number, number, number] => {
+  if (!color) return [0, 0, 0];
+
+  if (color.startsWith('#')) {
+    const hex = color.length === 4
+      ? `#${color[1]}${color[1]}${color[2]}${color[2]}${color[3]}${color[3]}`
+      : color;
+    return [
+      parseInt(hex.slice(1, 3), 16) || 0,
+      parseInt(hex.slice(3, 5), 16) || 0,
+      parseInt(hex.slice(5, 7), 16) || 0,
+    ];
+  }
+
+  const rgbMatch = color.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
+  if (rgbMatch) {
+    return [parseInt(rgbMatch[1], 10), parseInt(rgbMatch[2], 10), parseInt(rgbMatch[3], 10)];
+  }
+
+  if (color.includes(',')) {
+    const parts = color.split(',').map((p) => parseInt(p.trim(), 10));
+    if (parts.length >= 3 && parts.every((n) => !Number.isNaN(n))) {
+      return [parts[0], parts[1], parts[2]];
+    }
+  }
+
+  return [0, 0, 0];
+};
 
 /**
  * Parse RGB color string to [r, g, b] array
- * @param rgb - RGB color string like "rgb(255, 128, 0)"
- * @returns [r, g, b] array or [0, 0, 0] if invalid
  */
 export const parseRgbString = (rgb: string): [number, number, number] => {
-  const match = rgb.match(/rgb\((\d+), (\d+), (\d+)\)/);
-  if (!match) return [0, 0, 0];
-  return [parseInt(match[1]), parseInt(match[2]), parseInt(match[3])];
+  return parseColorToRgb(rgb);
 };
 
 /**
  * Convert RGB string to HEX color
- * @param rgb - RGB color string like "rgb(255, 128, 0)" or already hex
- * @returns HEX color string like "#ff8000"
  */
 export const rgbToHex = (rgb: string): string => {
-  if (!rgb) return '#000000';  // Guard against undefined/null
+  if (!rgb) return '#000000';
   if (rgb.startsWith('#')) return rgb;
   
-  const [r, g, b] = parseRgbString(rgb);
+  const [r, g, b] = parseColorToRgb(rgb);
   const toHex = (n: number) => n.toString(16).padStart(2, '0');
   return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
 };
 
 /**
  * Convert HEX color to RGB string
- * @param hex - HEX color string like "#ff8000"
- * @returns RGB string like "rgb(255, 128, 0)"
  */
 export const hexToRgb = (hex: string): string => {
-  const r = parseInt(hex.slice(1, 3), 16);
-  const g = parseInt(hex.slice(3, 5), 16);
-  const b = parseInt(hex.slice(5, 7), 16);
+  const [r, g, b] = parseColorToRgb(hex);
   return `rgb(${r}, ${g}, ${b})`;
 };
 
 /**
  * Convert HEX color to RGB array
- * @param hex - HEX color string like "#ff8000"
- * @returns RGB array [r, g, b]
  */
 export const hexToRgbArray = (hex: string): [number, number, number] => {
-  const r = parseInt(hex.slice(1, 3), 16);
-  const g = parseInt(hex.slice(3, 5), 16);
-  const b = parseInt(hex.slice(5, 7), 16);
-  return [r, g, b];
+  return parseColorToRgb(hex);
 };
 
 /**
- * Calculate Euclidean distance between two colors in RGB space
- * @param rgb1 - First RGB values [r, g, b]
- * @param rgb2 - Second RGB values [r, g, b]
- * @returns Distance value
+ * Euclidean distance in RGB. Prefer {@link colorDistanceLab} for perception.
  */
 export const colorDistance = (
   rgb1: [number, number, number],
@@ -69,42 +89,113 @@ export const colorDistance = (
   );
 };
 
+type Lab = [number, number, number];
+
+const rgbToLab = (rgb: [number, number, number]): Lab => {
+  const lab = chroma.rgb(rgb[0], rgb[1], rgb[2]).lab();
+  return [lab[0], lab[1], lab[2]];
+};
+
+const labToRgb = (lab: Lab): [number, number, number] => {
+  const rgb = chroma.lab(lab[0], lab[1], lab[2]).rgb();
+  return [
+    Math.max(0, Math.min(255, Math.round(rgb[0]))),
+    Math.max(0, Math.min(255, Math.round(rgb[1]))),
+    Math.max(0, Math.min(255, Math.round(rgb[2]))),
+  ];
+};
+
+/** Euclidean distance in CIELAB (≈ ΔE76) */
+export const colorDistanceLab = (
+  rgb1: [number, number, number],
+  rgb2: [number, number, number]
+): number => {
+  const a = rgbToLab(rgb1);
+  const b = rgbToLab(rgb2);
+  return Math.sqrt(
+    (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2
+  );
+};
+
+const labDistance = (a: Lab, b: Lab): number =>
+  Math.sqrt((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2);
+
+const rgbKey = (rgb: [number, number, number]) =>
+  `${rgb[0]},${rgb[1]},${rgb[2]}`;
+
+const toRgbString = (rgb: [number, number, number]) =>
+  `rgb(${rgb[0]}, ${rgb[1]}, ${rgb[2]})`;
+
+/** Deterministic PRNG so the same image + K yields the same palette */
+const mulberry32 = (seed: number) => {
+  let t = seed >>> 0;
+  return () => {
+    t += 0x6d2b79f5;
+    let r = Math.imul(t ^ (t >>> 15), 1 | t);
+    r ^= r + Math.imul(r ^ (r >>> 7), 61 | r);
+    return ((r ^ (r >>> 14)) >>> 0) / 4294967296;
+  };
+};
+
+const hashImageSeed = (imageData: ImageData): number => {
+  const { data, width, height } = imageData;
+  let h = (width * 73856093) ^ (height * 19349663) ^ data.length;
+  const step = Math.max(4, Math.floor(data.length / 256) * 4);
+  for (let i = 0; i < data.length; i += step) {
+    h = Math.imul(h ^ data[i], 0x01000193);
+    h = Math.imul(h ^ data[i + 1], 0x01000193);
+    h = Math.imul(h ^ data[i + 2], 0x01000193);
+  }
+  return h >>> 0;
+};
+
 /**
- * Find the closest color in palette for given RGB values
- * @param r - Red value (0-255)
- * @param g - Green value (0-255)
- * @param b - Blue value (0-255)
- * @param colorPalette - Array of RGB color strings
- * @returns Index of the closest color in the palette
+ * Find the closest palette color using CIELAB distance
  */
+export const createLabColorMatcher = (
+  colorPalette: string[]
+): ((r: number, g: number, b: number) => number) => {
+  // Palette colors are constant for a mapping pass. Convert them once instead
+  // of repeating the same chroma RGB → Lab conversion for every tile.
+  const paletteLab = colorPalette.map((color) =>
+    rgbToLab(parseColorToRgb(color))
+  );
+
+  return (r: number, g: number, b: number): number => {
+    if (paletteLab.length === 0) return 0;
+
+    const sampleLab = rgbToLab([r, g, b]);
+    let minDist = Infinity;
+    let closestIndex = 0;
+
+    for (let index = 0; index < paletteLab.length; index++) {
+      const dist = labDistance(sampleLab, paletteLab[index]);
+      if (dist < minDist) {
+        minDist = dist;
+        closestIndex = index;
+      }
+    }
+
+    return closestIndex;
+  };
+};
+
 export const findClosestColor = (
   r: number,
   g: number,
   b: number,
   colorPalette: string[]
 ): number => {
-  let minDist = Infinity;
-  let closestIndex = 0;
-
-  colorPalette.forEach((color, index) => {
-    const paletteRgb = parseRgbString(color);
-    const dist = colorDistance([r, g, b], paletteRgb);
-    
-    if (dist < minDist) {
-      minDist = dist;
-      closestIndex = index;
-    }
-  });
-
-  return closestIndex;
+  return createLabColorMatcher(colorPalette)(r, g, b);
 };
 
 /**
- * Color quantization using median cut algorithm
- * Reduces an image to a specific number of representative colors
- * @param imageData - ImageData from canvas
- * @param targetNumColors - Target number of colors
- * @returns Array of RGB color strings
+ * Color quantization via CIELAB + k-means++.
+ *
+ * Design-tool style:
+ * - Cluster in perceptually uniform Lab space
+ * - k-means++ initialization for well-spread centers
+ * - Deterministic seed from image content (stable when changing K)
  */
 export const quantizeColors = (
   imageData: ImageData,
@@ -112,116 +203,182 @@ export const quantizeColors = (
 ): string[] => {
   if (targetNumColors <= 0) return [];
 
-  // Extract all pixels as [r, g, b] arrays and track global frequency
-  const pixels: [number, number, number][] = [];
   const globalFrequency = new Map<string, number>();
+
   for (let i = 0; i < imageData.data.length; i += 4) {
+    if (imageData.data[i + 3] === 0) continue;
+
     const pixel: [number, number, number] = [
       imageData.data[i],
       imageData.data[i + 1],
-      imageData.data[i + 2]
+      imageData.data[i + 2],
     ];
-    pixels.push(pixel);
-    const key = `${pixel[0]},${pixel[1]},${pixel[2]}`;
+    const key = rgbKey(pixel);
     globalFrequency.set(key, (globalFrequency.get(key) ?? 0) + 1);
   }
 
-  if (pixels.length === 0) return [];
-
-  const toRgb = (key: string) => {
-    const [r, g, b] = key.split(',').map(Number);
-    return `rgb(${r}, ${g}, ${b})`;
-  };
-
-  const dominantGlobal = Array.from(globalFrequency.entries())
-    .sort((a, b) => b[1] - a[1])
-    .map(([key]) => key);
+  if (globalFrequency.size === 0) return [];
 
   if (globalFrequency.size <= targetNumColors) {
-    return dominantGlobal.slice(0, targetNumColors).map(toRgb);
+    return Array.from(globalFrequency.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, targetNumColors)
+      .map(([key]) => {
+        const [r, g, b] = key.split(',').map(Number) as [number, number, number];
+        return toRgbString([r, g, b]);
+      });
   }
 
-  const channelRange = (bucket: [number, number, number][]) => {
-    const ranges = [0, 1, 2].map((channel) => {
-      let min = 255;
-      let max = 0;
-      for (let i = 0; i < bucket.length; i++) {
-        const value = bucket[i][channel];
-        if (value < min) min = value;
-        if (value > max) max = value;
+  // Unique colors weighted by frequency (fast + correct for mosaic grids)
+  const uniqueEntries = Array.from(globalFrequency.entries());
+  const labPoints: Lab[] = [];
+  const weights: number[] = [];
+
+  for (const [key, weight] of uniqueEntries) {
+    const [r, g, b] = key.split(',').map(Number) as [number, number, number];
+    labPoints.push(rgbToLab([r, g, b]));
+    weights.push(weight);
+  }
+
+  const k = Math.min(targetNumColors, labPoints.length);
+  const MAX_ITERS = 20;
+  const ATTEMPTS = 3;
+  const baseSeed = hashImageSeed(imageData) ^ (k * 2654435761);
+
+  const runKMeans = (attempt: number) => {
+    const random = mulberry32(baseSeed ^ Math.imul(attempt + 1, 0x9e3779b1));
+    const centers: Lab[] = [];
+    const firstIdx = Math.floor(random() * labPoints.length);
+    centers.push([...labPoints[firstIdx]] as Lab);
+
+    const minDistSq = new Float64Array(labPoints.length).fill(Infinity);
+    while (centers.length < k) {
+      let sum = 0;
+      const probabilities = new Float64Array(labPoints.length);
+      const last = centers[centers.length - 1];
+
+      for (let i = 0; i < labPoints.length; i++) {
+        const distance = labDistance(labPoints[i], last);
+        const distanceSq = distance * distance;
+        if (distanceSq < minDistSq[i]) minDistSq[i] = distanceSq;
+        probabilities[i] = minDistSq[i] * weights[i];
+        sum += probabilities[i];
       }
-      return max - min;
-    });
-    const maxRange = Math.max(...ranges);
-    return {
-      maxRange,
-      maxChannel: ranges.indexOf(maxRange),
-    };
+
+      if (sum <= 0) break;
+
+      let threshold = random() * sum;
+      let chosen = labPoints.length - 1;
+      for (let i = 0; i < labPoints.length; i++) {
+        threshold -= probabilities[i];
+        if (threshold <= 0) {
+          chosen = i;
+          break;
+        }
+      }
+      centers.push([...labPoints[chosen]] as Lab);
+    }
+
+    const assignments = new Int32Array(labPoints.length).fill(-1);
+    for (let iter = 0; iter < MAX_ITERS; iter++) {
+      let changed = false;
+
+      for (let i = 0; i < labPoints.length; i++) {
+        let best = 0;
+        let bestDistance = Infinity;
+        for (let c = 0; c < centers.length; c++) {
+          const distance = labDistance(labPoints[i], centers[c]);
+          if (distance < bestDistance) {
+            bestDistance = distance;
+            best = c;
+          }
+        }
+        if (assignments[i] !== best) {
+          assignments[i] = best;
+          changed = true;
+        }
+      }
+
+      const sums: Lab[] = centers.map(() => [0, 0, 0]);
+      const counts = new Float64Array(centers.length);
+      for (let i = 0; i < labPoints.length; i++) {
+        const cluster = assignments[i];
+        const weight = weights[i];
+        sums[cluster][0] += labPoints[i][0] * weight;
+        sums[cluster][1] += labPoints[i][1] * weight;
+        sums[cluster][2] += labPoints[i][2] * weight;
+        counts[cluster] += weight;
+      }
+
+      for (let c = 0; c < centers.length; c++) {
+        if (counts[c] > 0) {
+          centers[c] = [
+            sums[c][0] / counts[c],
+            sums[c][1] / counts[c],
+            sums[c][2] / counts[c],
+          ];
+        }
+      }
+
+      if (!changed) break;
+    }
+
+    let inertia = 0;
+    for (let i = 0; i < labPoints.length; i++) {
+      const distance = labDistance(labPoints[i], centers[assignments[i]]);
+      inertia += distance * distance * weights[i];
+    }
+
+    return { centers, assignments, inertia };
   };
 
-  const buckets: [number, number, number][][] = [pixels];
-  while (buckets.length < targetNumColors) {
-    let bestIndex = -1;
-    let bestRange = -1;
-    let splitChannel = 0;
-
-    for (let i = 0; i < buckets.length; i++) {
-      const bucket = buckets[i];
-      if (bucket.length <= 1) continue;
-      const { maxRange, maxChannel: channel } = channelRange(bucket);
-      if (maxRange > bestRange) {
-        bestRange = maxRange;
-        bestIndex = i;
-        splitChannel = channel;
-      }
+  let bestRun = runKMeans(0);
+  for (let attempt = 1; attempt < ATTEMPTS; attempt++) {
+    const candidate = runKMeans(attempt);
+    if (candidate.inertia < bestRun.inertia) {
+      bestRun = candidate;
     }
-
-    if (bestIndex === -1) break;
-
-    const bucket = buckets[bestIndex];
-    bucket.sort((a, b) => a[splitChannel] - b[splitChannel]);
-    const mid = Math.floor(bucket.length / 2);
-    const left = bucket.slice(0, mid);
-    const right = bucket.slice(mid);
-    if (left.length === 0 || right.length === 0) break;
-    buckets.splice(bestIndex, 1, left, right);
   }
 
-  const chosenKeys: string[] = [];
+  const { centers, assignments } = bestRun;
+
+  const clusterWeights = new Float64Array(centers.length);
+  for (let i = 0; i < assignments.length; i++) {
+    clusterWeights[assignments[i]] += weights[i];
+  }
+
+  const ordered = centers
+    .map((lab, index) => ({ lab, weight: clusterWeights[index] }))
+    .filter((c) => c.weight > 0)
+    .sort((a, b) => b.weight - a.weight);
+
+  const result: string[] = [];
   const used = new Set<string>();
+  for (const { lab } of ordered) {
+    if (result.length >= targetNumColors) break;
+    const rgb = labToRgb(lab);
+    const key = rgbKey(rgb);
+    if (used.has(key)) continue;
+    used.add(key);
+    result.push(toRgbString(rgb));
+  }
 
-  // Pick representative colors that actually exist in the image (mode per bucket).
-  buckets.forEach((bucket) => {
-    const localFrequency = new Map<string, number>();
-    for (let i = 0; i < bucket.length; i++) {
-      const key = `${bucket[i][0]},${bucket[i][1]},${bucket[i][2]}`;
-      localFrequency.set(key, (localFrequency.get(key) ?? 0) + 1);
-    }
-    const candidates = Array.from(localFrequency.entries())
-      .sort((a, b) => b[1] - a[1])
-      .map(([key]) => key);
-    const uniqueCandidate = candidates.find((key) => !used.has(key)) ?? candidates[0];
-    if (uniqueCandidate && !used.has(uniqueCandidate)) {
-      used.add(uniqueCandidate);
-      chosenKeys.push(uniqueCandidate);
-    }
-  });
-
-  for (let i = 0; i < dominantGlobal.length && chosenKeys.length < targetNumColors; i++) {
-    const key = dominantGlobal[i];
-    if (!used.has(key)) {
+  if (result.length < targetNumColors) {
+    const globals = Array.from(globalFrequency.entries()).sort((a, b) => b[1] - a[1]);
+    for (const [key] of globals) {
+      if (result.length >= targetNumColors) break;
+      if (used.has(key)) continue;
       used.add(key);
-      chosenKeys.push(key);
+      const [r, g, b] = key.split(',').map(Number) as [number, number, number];
+      result.push(toRgbString([r, g, b]));
     }
   }
 
-  return chosenKeys.slice(0, targetNumColors).map(toRgb);
+  return result;
 };
 
 /**
  * Remove duplicate colors from palette and create mapping
- * @param colors - Array of RGB color strings
- * @returns Object with unique colors and mapping array
  */
 export const deduplicatePalette = (
   colors: string[]
@@ -243,15 +400,12 @@ export const deduplicatePalette = (
 };
 
 /**
- * Reduce palette to target size by merging similar colors
- * Uses iterative merging of closest color pairs
- * @param colors - Array of RGB color strings
- * @param targetSize - Target palette size
- * @returns Object with reduced colors and mapping array
+ * Reduce palette using Lab distance; keep heavier color (no muddy averages).
  */
 export const reducePalette = (
   colors: string[],
-  targetSize: number
+  targetSize: number,
+  weights?: number[]
 ): { reducedColors: string[]; mapping: number[] } => {
   if (colors.length <= targetSize) {
     return { 
@@ -260,22 +414,26 @@ export const reducePalette = (
     };
   }
 
-  // Parse RGB values for all colors
-  const rgbColors = colors.map(color => parseRgbString(color));
+  type Slot = {
+    rgb: [number, number, number];
+    weight: number;
+    origins: number[];
+  };
 
-  // Keep merging until we reach target size
-  let workingColors = [...rgbColors];
-  let workingMapping = colors.map((_, i) => i);
+  const slots: Slot[] = colors.map((color, i) => ({
+    rgb: parseColorToRgb(color),
+    weight: weights?.[i] ?? 1,
+    origins: [i],
+  }));
 
-  while (workingColors.length > targetSize) {
-    // Find two most similar colors
+  while (slots.length > targetSize) {
     let minDist = Infinity;
     let mergeI = 0;
     let mergeJ = 1;
 
-    for (let i = 0; i < workingColors.length; i++) {
-      for (let j = i + 1; j < workingColors.length; j++) {
-        const dist = colorDistance(workingColors[i], workingColors[j]);
+    for (let i = 0; i < slots.length; i++) {
+      for (let j = i + 1; j < slots.length; j++) {
+        const dist = colorDistanceLab(slots[i].rgb, slots[j].rgb);
         if (dist < minDist) {
           minDist = dist;
           mergeI = i;
@@ -284,42 +442,30 @@ export const reducePalette = (
       }
     }
 
-    // Merge the two colors (average them)
-    const merged: [number, number, number] = [
-      Math.round((workingColors[mergeI][0] + workingColors[mergeJ][0]) / 2),
-      Math.round((workingColors[mergeI][1] + workingColors[mergeJ][1]) / 2),
-      Math.round((workingColors[mergeI][2] + workingColors[mergeJ][2]) / 2)
-    ];
+    const keep = slots[mergeI].weight >= slots[mergeJ].weight ? mergeI : mergeJ;
+    const drop = keep === mergeI ? mergeJ : mergeI;
 
-    // Update mapping
-    workingMapping = workingMapping.map(idx => {
-      if (idx === mergeJ) return mergeI;
-      if (idx > mergeJ) return idx - 1;
-      return idx;
-    });
-
-    // Remove merged color and update the kept one
-    workingColors[mergeI] = merged;
-    workingColors.splice(mergeJ, 1);
+    slots[keep] = {
+      rgb: slots[keep].rgb,
+      weight: slots[keep].weight + slots[drop].weight,
+      origins: [...slots[keep].origins, ...slots[drop].origins],
+    };
+    slots.splice(drop, 1);
   }
 
-  // Convert back to RGB strings
-  const reducedColors = workingColors.map(
-    ([r, g, b]) => `rgb(${r}, ${g}, ${b})`
-  );
+  const reducedColors = slots.map((s) => toRgbString(s.rgb));
+  const mapping = new Array(colors.length).fill(0);
+  slots.forEach((slot, newIndex) => {
+    slot.origins.forEach((origin) => {
+      mapping[origin] = newIndex;
+    });
+  });
 
-  return { reducedColors, mapping: workingMapping };
+  return { reducedColors, mapping };
 };
 
 /**
- * Process ImageData to handle transparency:
- * - Fully transparent pixels (alpha === 0) are marked in a mask
- * - Semi-transparent pixels (alpha 1-254) are composited to white background
- * - Fully opaque pixels (alpha === 255) are unchanged
- * 
- * @param imageData - The image data to process
- * @param backgroundColor - Background color for alpha compositing (default: white)
- * @returns Processed image data and transparent mask
+ * Process ImageData to handle transparency
  */
 export const processImageDataForTransparency = (
   imageData: ImageData,
@@ -335,19 +481,15 @@ export const processImageDataForTransparency = (
     const a = data[i + 3];
     
     if (a === 0) {
-      // Fully transparent - mark in mask
       transparentMask[pixelIndex] = 1;
-      // Don't modify RGB values
     } else if (a < 255) {
-      // Semi-transparent - alpha compositing to white background
       const alpha = a / 255;
       data[i] = Math.round(r * alpha + backgroundColor.r * (1 - alpha));
       data[i + 1] = Math.round(g * alpha + backgroundColor.g * (1 - alpha));
       data[i + 2] = Math.round(b * alpha + backgroundColor.b * (1 - alpha));
-      data[i + 3] = 255; // Make fully opaque
+      data[i + 3] = 255;
       transparentMask[pixelIndex] = 0;
     } else {
-      // Fully opaque - no processing needed
       transparentMask[pixelIndex] = 0;
     }
   }
@@ -357,8 +499,6 @@ export const processImageDataForTransparency = (
 
 /**
  * Check if image data contains any transparent pixels
- * @param imageData - The image data to check
- * @returns True if any pixel has alpha < 255
  */
 export const hasTransparency = (imageData: ImageData): boolean => {
   const data = imageData.data;

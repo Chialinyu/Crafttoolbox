@@ -1,9 +1,12 @@
 import React, { useRef, useState } from 'react';
 import { useLanguage } from '../../contexts/LanguageContext';
-import { Upload, Image as ImageIcon } from 'lucide-react';
+import { Upload } from 'lucide-react';
 import { Button } from '../ui/button';
 import { toast } from 'sonner';
-import { LIMITS } from './constants';
+import {
+  formatResizeWarning,
+  guardImageUpload,
+} from '../../../utils/imageUploadGuard';
 
 interface ImageUploaderProps {
   onImageUpload: (imageData: ImageData, originalImage: HTMLImageElement) => void;
@@ -18,96 +21,48 @@ export const ImageUploader: React.FC<ImageUploaderProps> = ({ onImageUpload }) =
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [preview, setPreview] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
 
-  const handleFileSelect = (file: File) => {
-    if (!file.type.startsWith('image/')) {
-      toast.error('Please select an image file');
-      return;
+  const handleFileSelect = async (file: File) => {
+    setIsLoading(true);
+    try {
+      const result = await guardImageUpload(file);
+      if (result.ok === false) {
+        toast.error(result.message);
+        return;
+      }
+
+      if (result.wasResized) {
+        toast.warning(
+          formatResizeWarning(
+            result.originalWidth,
+            result.originalHeight,
+            result.image.width,
+            result.image.height
+          ),
+          { duration: 5000 }
+        );
+      }
+
+      setPreview(result.previewDataUrl);
+      onImageUpload(result.imageData, result.image);
+    } finally {
+      setIsLoading(false);
     }
-
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const img = new Image();
-      img.onload = () => {
-        // ✅ Check image dimensions and resize if needed
-        let targetWidth = img.width;
-        let targetHeight = img.height;
-        const totalPixels = img.width * img.height;
-        
-        // Check if image exceeds size limits
-        if (img.width > LIMITS.MAX_IMAGE_WIDTH || 
-            img.height > LIMITS.MAX_IMAGE_HEIGHT || 
-            totalPixels > LIMITS.MAX_PIXELS) {
-          
-          // Calculate scale to fit within limits
-          const scaleWidth = LIMITS.MAX_IMAGE_WIDTH / img.width;
-          const scaleHeight = LIMITS.MAX_IMAGE_HEIGHT / img.height;
-          const scalePixels = Math.sqrt(LIMITS.MAX_PIXELS / totalPixels);
-          const scale = Math.min(scaleWidth, scaleHeight, scalePixels);
-          
-          targetWidth = Math.floor(img.width * scale);
-          targetHeight = Math.floor(img.height * scale);
-          
-          toast.warning(
-            `Image too large (${img.width}×${img.height}). Resized to ${targetWidth}×${targetHeight} for processing.`,
-            { duration: 5000 }
-          );
-        }
-        
-        // Create canvas to extract ImageData
-        const canvas = document.createElement('canvas');
-        canvas.width = targetWidth;
-        canvas.height = targetHeight;
-        const ctx = canvas.getContext('2d');
-        
-        if (ctx) {
-          // Draw with scaling if needed
-          ctx.drawImage(img, 0, 0, targetWidth, targetHeight);
-          
-          try {
-            const imageData = ctx.getImageData(0, 0, targetWidth, targetHeight);
-            
-            // Set preview
-            setPreview(e.target?.result as string);
-            
-            // Create a new image object with the resized dimensions
-            const resizedImg = new Image();
-            resizedImg.width = targetWidth;
-            resizedImg.height = targetHeight;
-            resizedImg.src = canvas.toDataURL();
-            
-            // Callback with image data
-            onImageUpload(imageData, resizedImg);
-          } catch (error) {
-            console.error('Failed to process image:', error);
-            toast.error('Failed to process image. Please try a smaller image.');
-          }
-        }
-      };
-      
-      img.onerror = () => {
-        toast.error('Failed to load image');
-      };
-      
-      img.src = e.target?.result as string;
-    };
-    
-    reader.onerror = () => {
-      toast.error('Failed to read file');
-    };
-    
-    reader.readAsDataURL(file);
   };
 
   const handleClick = () => {
+    if (isLoading) return;
     fileInputRef.current?.click();
   };
 
   const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
-      handleFileSelect(file);
+      void handleFileSelect(file);
     }
+    // Allow re-selecting the same file
+    e.target.value = '';
   };
 
   const handleDragOver = (e: React.DragEvent) => {
@@ -126,7 +81,7 @@ export const ImageUploader: React.FC<ImageUploaderProps> = ({ onImageUpload }) =
     
     const file = e.dataTransfer.files[0];
     if (file) {
-      handleFileSelect(file);
+      void handleFileSelect(file);
     }
   };
 
@@ -135,7 +90,7 @@ export const ImageUploader: React.FC<ImageUploaderProps> = ({ onImageUpload }) =
       <input
         ref={fileInputRef}
         type="file"
-        accept="image/*"
+        accept="image/png,image/jpeg,image/gif,image/webp,image/bmp"
         onChange={handleFileInputChange}
         className="hidden"
       />
@@ -145,21 +100,31 @@ export const ImageUploader: React.FC<ImageUploaderProps> = ({ onImageUpload }) =
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
+        role="button"
+        tabIndex={0}
+        aria-label={t('uploadImage')}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            handleClick();
+          }
+        }}
         className={`
           border-2 border-dashed rounded-lg p-8 text-center cursor-pointer
           transition-colors duration-200
           border-border hover:border-primary hover:bg-primary/5
           ${isDragging ? 'border-primary bg-primary/5' : ''}
+          ${isLoading ? 'opacity-60 pointer-events-none' : ''}
         `}
       >
         {preview ? (
           <div className="space-y-4">
-            <img 
-              src={preview} 
-              alt="Preview" 
+            <img
+              src={preview}
+              alt={t('uploadImage')}
               className="max-h-48 mx-auto rounded-lg shadow-md"
             />
-            <Button variant="outline" size="sm">
+            <Button variant="outline" size="sm" type="button">
               <Upload className="h-4 w-4 mr-2" />
               {t('chooseImage')}
             </Button>

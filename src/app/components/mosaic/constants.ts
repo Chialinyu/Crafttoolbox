@@ -33,9 +33,9 @@ export const DEFAULTS = {
   MIN_TILE_DEPTH: 1,
   MAX_TILE_DEPTH: 10,
   
-  // Canvas size limits
+  // Canvas size limits — aligned with CanvasSizePanel slider max
   MIN_CANVAS_DIMENSION: 10,
-  MAX_CANVAS_DIMENSION: 200,
+  MAX_CANVAS_DIMENSION: 150,
 } as const;
 
 // ==================== COLOR DEFAULTS ====================

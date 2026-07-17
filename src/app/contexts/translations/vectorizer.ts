@@ -16,16 +16,22 @@ export const vectorizerTranslations = {
   
   // Mode Selection
   modeLineTitle: { zh: '線條模式', en: 'Line Mode' },
-  modeLineDesc: { zh: '單色黑白線條向量化', en: 'Single-color black and white line vectorization' },
-  modeLineUseCase: { zh: '適合：手繪稿、Logo、文字', en: 'Best for: Sketches, logos, text' },
+  modeLineDesc: { zh: '產生可調粗細的中心線或色塊外框', en: 'Create adjustable centerlines or color-region outlines' },
+  modeLineUseCase: { zh: '適合：線稿、Logo、Outline Icon', en: 'Best for: Line art, logos, outline icons' },
   
   modeFillTitle: { zh: '填充模式', en: 'Fill Mode' },
   modeFillDesc: { zh: '多色封閉區塊向量化', en: 'Multi-color filled region vectorization' },
   modeFillUseCase: { zh: '適合：插畫、平面設計、剪影', en: 'Best for: Illustrations, flat designs, silhouettes' },
   
   modeMixedTitle: { zh: '混合模式', en: 'Mixed Mode' },
-  modeMixedDesc: { zh: '線條與填充結合', en: 'Combination of lines and fills' },
-  modeMixedUseCase: { zh: '適合：漫畫、複雜插圖', en: 'Best for: Comics, complex illustrations' },
+  modeMixedDesc: { zh: '保留色塊填色並自動加上外框', en: 'Keep filled regions and add automatic outlines' },
+  modeMixedUseCase: { zh: '適合：Filled Icon、貼圖、扁平插圖', en: 'Best for: Filled icons, stickers, flat illustrations' },
+
+  lineSource: { zh: '線條來源', en: 'Line Source' },
+  lineSourceSkeleton: { zh: '線稿中心線', en: 'Centerline' },
+  lineSourceSkeletonDesc: { zh: '將原圖中的細線骨架化，保留線條中心與偵測到的粗度', en: 'Skeletonize thin artwork into centerlines with detected width' },
+  lineSourceOutline: { zh: '色塊外框', en: 'Color Outlines' },
+  lineSourceOutlineDesc: { zh: '依顏色分群，自動沿不同色塊的邊界產生外框', en: 'Cluster colors and trace the boundaries between regions' },
   
   selected: { zh: '已選', en: 'Selected' },
   currentMode: { zh: '當前模式', en: 'Current Mode' },
@@ -61,22 +67,11 @@ export const vectorizerTranslations = {
   pathsGenerated: { zh: '個向量路徑', en: 'vector paths' },
   strokeWidth: { zh: '線條粗細', en: 'Stroke Width' }, // 🆕
   
-  // Node Editor
-  nodeEditor: { zh: '節點編輯', en: 'Node Editor' },
-  showNodes: { zh: '顯示節點', en: 'Show Nodes' },
-  showControlPoints: { zh: '顯示控制點', en: 'Show Control Points' },
+  // Preview display
   showOriginalImage: { zh: '顯示原圖', en: 'Show Original Image' },
   imageOpacity: { zh: '原圖不透明度', en: 'Image Opacity' },
-  deleteNode: { zh: '刪除節點', en: 'Delete Node' },
-  addNode: { zh: '添加節點', en: 'Add Node' },
-  nodeType: { zh: '節點類型', en: 'Node Type' },
-  cornerNode: { zh: '尖角', en: 'Corner' },
-  smoothNode: { zh: '平滑', en: 'Smooth' },
-  asymmetricNode: { zh: '非對稱', en: 'Asymmetric' },
-  selectedNodes: { zh: '已選節點', en: 'Selected Nodes' },
   
   // Canvas Controls  
-  snapToGrid: { zh: '對齊網格', en: 'Snap to Grid' },
   zoomIn: { en: 'Zoom In', zh: '放大' },
   zoomOut: { en: 'Zoom Out', zh: '縮小' },
   fitToScreen: { en: 'Fit to Screen', zh: '符合螢幕' },
@@ -104,7 +99,6 @@ export const vectorizerTranslations = {
   reset: { zh: '重設', en: 'Reset' },
   
   // Instructions
-  ctrlClickToAdd: { zh: 'Ctrl+點擊添加節點', en: 'Ctrl+Click to add node' },
   completeStepFirst: { zh: '請先完成上一步', en: 'Please complete the previous step first' },
   
   // Color Palette
@@ -123,17 +117,16 @@ export const vectorizerTranslations = {
   separateFgBgDesc: { zh: '分離前景與背景', en: 'Separate foreground from background' },
   colorClustersDesc: { zh: '向量化的顏色分群數量', en: 'Number of color clusters for vectorization' },
   adjustStrokeWidthDesc: { zh: '調整線條粗細倍率', en: 'Adjust stroke width multiplier' },
+  strokeColor: { zh: '線條顏色', en: 'Stroke Color' },
+  strokeLineCap: { zh: '端點樣式', en: 'Line Cap' },
+  strokeLineJoin: { zh: '轉角樣式', en: 'Line Join' },
+  strokeRound: { zh: '圓角', en: 'Round' },
+  strokeButt: { zh: '平頭', en: 'Butt' },
+  strokeSquare: { zh: '方頭', en: 'Square' },
+  strokeBevel: { zh: '斜角', en: 'Bevel' },
+  strokeMiter: { zh: '尖角', en: 'Miter' },
   detailLevel: { zh: '細節保留', en: 'Detail Preservation' },
   detailLevelDesc: { zh: '控制保留或過濾細小路徑的靈敏度（值越高保留越多細節）', en: 'Controls sensitivity for preserving or filtering small paths (higher = keep more details)' },
-  vectorEditInProgress: { zh: '向量節點編輯功能開發中...', en: 'Vector node editing feature in development...' },
-  
-  // Bezier Curves
-  useBezierCurves: { zh: '使用貝茲曲線', en: 'Use Bezier Curves' },
-  useBezierCurvesDesc: { zh: '啟用平滑的貝茲曲線路徑', en: 'Enable smooth bezier curve paths' },
-  bezierAlgorithm: { zh: '曲線算法', en: 'Curve Algorithm' },
-  bezierAlgorithmDesc: { zh: 'Custom：自適應曲率算法 | Potrace：行業標準算法', en: 'Custom: Adaptive curvature | Potrace: Industry standard' },
-  bezierCustom: { zh: '自定義', en: 'Custom' },
-  bezierPotrace: { zh: 'Potrace', en: 'Potrace' },
   
   // Path Layer Panel
   vectorLayers: { zh: '向量圖層', en: 'Vector Layers' },

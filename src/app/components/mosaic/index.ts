@@ -16,6 +16,16 @@ export { BorderEffectsPanel } from './BorderEffectsPanel';
 
 // ==================== TYPES & CONSTANTS ====================
 
-export * from './types';
+export type {
+  ColorStats,
+  MosaicState,
+  MosaicGeneratorProps,
+  Dimensions,
+  RgbString,
+  HexColor,
+  RgbArray,
+  ColorMap,
+} from './types';
+export { TRANSPARENT_COLOR_INDEX, TRANSPARENT_COLOR } from './types';
 export * from './constants';
 export * from './helpers';

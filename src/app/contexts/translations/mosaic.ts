@@ -58,14 +58,6 @@ export const mosaicTranslations = {
   totalTiles: { zh: '總磁磚數', en: 'Total tiles' },
   actualSize: { zh: '實際尺寸', en: 'Actual size' },
   
-  // Crop
-  cropImage: { zh: '裁切圖片', en: 'Crop Image' },
-  enableCrop: { zh: '啟用裁切', en: 'Enable Crop' },
-  applyCrop: { zh: '應用裁切', en: 'Apply Crop' },
-  resetCrop: { zh: '重設裁切', en: 'Reset Crop' },
-  cropArea: { zh: '裁切區域', en: 'Crop Area' },
-  dragToAdjust: { zh: '拖拽調整裁切範圍', en: 'Drag to adjust crop area' },
-  
   // Export
   format: { zh: '格式', en: 'Format' },
   output: { zh: '輸出', en: 'Output' },

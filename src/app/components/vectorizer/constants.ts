@@ -10,6 +10,8 @@
  * ============================================================================
  */
 
+import { IMAGE_UPLOAD_LIMITS } from '../../../utils/imageUploadGuard';
+
 // Default parameter values
 export const DEFAULT_VALUES = {
   // Step 3: Preprocessing
@@ -39,10 +41,11 @@ export const LIMITS = {
   STROKE_WIDTH_MIN: 1,
   STROKE_WIDTH_MAX: 20, // 🆕 Stroke width limits
   
-  // Image size limits (to prevent memory allocation failures)
-  MAX_IMAGE_WIDTH: 2000,
-  MAX_IMAGE_HEIGHT: 2000,
-  MAX_PIXELS: 4000000, // 2000x2000 = 4M pixels max
+  // Image size limits — shared with Mosaic via imageUploadGuard
+  MAX_IMAGE_WIDTH: IMAGE_UPLOAD_LIMITS.MAX_IMAGE_WIDTH,
+  MAX_IMAGE_HEIGHT: IMAGE_UPLOAD_LIMITS.MAX_IMAGE_HEIGHT,
+  MAX_PIXELS: IMAGE_UPLOAD_LIMITS.MAX_PIXELS,
+  MAX_FILE_BYTES: IMAGE_UPLOAD_LIMITS.MAX_FILE_BYTES,
 } as const;
 
 // Special label values for clustering

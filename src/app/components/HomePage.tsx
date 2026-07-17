@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useLanguage } from '../contexts/LanguageContext';
-import { Search, Sparkles, Wrench } from 'lucide-react';
+import { Search, Sparkles } from 'lucide-react';
 import { Input } from './ui/input';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card';
 import { motion } from 'motion/react';
@@ -50,10 +50,10 @@ export const HomePage: React.FC<HomePageProps> = ({ onSelectTool }) => {
   const categories = [
     { key: 'all', labelKey: 'allCategories' },
     { key: 'collageArt', labelKey: 'collageArt' },
-    { key: 'textile', labelKey: 'textile' },
-    { key: 'paperCraft', labelKey: 'paperCraft' },
-    { key: 'painting', labelKey: 'painting' },
-  ];
+  ].filter((category) => {
+    if (category.key === 'all') return true;
+    return tools.some((tool) => tool.category === category.key);
+  });
 
   const filteredTools = tools.filter(tool => {
     const matchesSearch = t(tool.nameKey).toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -136,10 +136,20 @@ export const HomePage: React.FC<HomePageProps> = ({ onSelectTool }) => {
                 transition={{ duration: 0.4, delay: index * 0.1 }}
               >
                 <Card
+                  role="button"
+                  tabIndex={0}
+                  aria-label={t(tool.nameKey)}
                   className="cursor-pointer hover:shadow-lg transition-all duration-300 hover:-translate-y-1 overflow-hidden group"
                   onClick={() => {
                     trackToolUsage(tool.id, 'tool_selected', t(tool.nameKey));
                     onSelectTool(tool.id);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      trackToolUsage(tool.id, 'tool_selected', t(tool.nameKey));
+                      onSelectTool(tool.id);
+                    }
                   }}
                 >
                   {tool.imageUrl ? (
@@ -176,7 +186,7 @@ export const HomePage: React.FC<HomePageProps> = ({ onSelectTool }) => {
           {filteredTools.length === 0 && (
             <div className="text-center py-12">
               <p className="text-muted-foreground">
-                {searchQuery ? '沒有找到相關工具 / No tools found' : ''}
+                {t('noToolsFound')}
               </p>
             </div>
           )}

@@ -27,15 +27,48 @@ export function detectCircleOrEllipse(
   pixels: Array<{ x: number; y: number }>,
   circularityThreshold: number = 0.85 // How circular must it be to use <circle>
 ): CirclePrimitive | EllipsePrimitive | null {
+  if (pixels.length < 16) return null;
+
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+  for (const p of pixels) {
+    minX = Math.min(minX, p.x);
+    maxX = Math.max(maxX, p.x);
+    minY = Math.min(minY, p.y);
+    maxY = Math.max(maxY, p.y);
+  }
+
+  const bboxArea = (maxX - minX + 1) * (maxY - minY + 1);
+  if (bboxArea <= 0) return null;
+  const fillRatio = pixels.length / bboxArea;
+
+  // Circles/ellipses occupy ~π/4 of their AABB; solid rects are near 1.0.
+  if (fillRatio > 0.90) return null;
+
+  // Filled rectangle corners are a strong reject signal for round shapes.
+  const pixelSet = new Set(pixels.map((p) => `${p.x},${p.y}`));
+  const cornerHits = [
+    pixelSet.has(`${minX},${minY}`),
+    pixelSet.has(`${maxX},${minY}`),
+    pixelSet.has(`${minX},${maxY}`),
+    pixelSet.has(`${maxX},${maxY}`),
+  ].filter(Boolean).length;
+  if (cornerHits >= 3) return null;
+
   const ellipse = fitEllipse(pixels);
-  if (!ellipse) return null;
-  
+  if (!ellipse || ellipse.a < 2 || ellipse.b < 2) return null;
+
   const { cx, cy, a, b, angle } = ellipse;
-  
+  const ellipseArea = Math.PI * a * b;
+  const areaRatio = Math.min(pixels.length, ellipseArea) / Math.max(pixels.length, ellipseArea);
+  if (areaRatio < 0.78) return null;
+
   // Check if it's nearly circular (aspect ratio close to 1)
   const aspectRatio = Math.max(a, b) / Math.min(a, b);
-  
-  if (aspectRatio < 1.15) {
+
+  if (aspectRatio < 1.15 && fillRatio >= 0.60) {
     // It's a circle! Use <circle> primitive
     const r = (a + b) / 2; // Average radius
     return {
@@ -44,19 +77,23 @@ export function detectCircleOrEllipse(
       cy,
       r,
     };
-  } else {
-    // It's an ellipse, use <ellipse> primitive
-    const angleDeg = (angle * 180) / Math.PI;
-    
-    return {
-      type: 'ellipse',
-      cx,
-      cy,
-      rx: a,
-      ry: b,
-      angle: angleDeg,
-    };
   }
+
+  if (aspectRatio > 2.2) return null;
+
+  // It's an ellipse, use <ellipse> primitive
+  // Require fill ratio roughly matching π*ab / AABB (AABB of rotated ellipse varies).
+  if (fillRatio < 0.55) return null;
+
+  const angleDeg = (angle * 180) / Math.PI;
+  return {
+    type: 'ellipse',
+    cx,
+    cy,
+    rx: a,
+    ry: b,
+    angle: angleDeg,
+  };
 }
 
 /**
