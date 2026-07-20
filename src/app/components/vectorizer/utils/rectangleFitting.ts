@@ -225,6 +225,9 @@ export function fitRectangleFromContour(
     // Residual: remaining contour points should stay near the 4 edges.
     if (contourEdgeResidual(contour, corners) > Math.max(1.8, diag * 0.035)) continue;
 
+    // Rounded rectangles: contour cuts the corner as an arc — reject sharp <rect>.
+    if (hasRoundedCorners(contour, corners)) continue;
+
     const rect = rectangleFromCorners(corners);
     if (
       canvasWidth != null &&
@@ -408,6 +411,44 @@ function contourEdgeResidual(
     sum += best * best;
   }
   return Math.sqrt(sum / contour.length);
+}
+
+/**
+ * Detect rounded corners: near each sharp vertex, many contour points sit
+ * inside the corner (away from both edges) — classic fillet/round signature.
+ */
+function hasRoundedCorners(
+  contour: Array<{ x: number; y: number }>,
+  corners: Array<{ x: number; y: number }>
+): boolean {
+  let rounded = 0;
+  for (let i = 0; i < 4; i++) {
+    const corner = corners[i];
+    const prev = corners[(i + 3) % 4];
+    const next = corners[(i + 1) % 4];
+    const leg = Math.min(
+      Math.hypot(corner.x - prev.x, corner.y - prev.y),
+      Math.hypot(next.x - corner.x, next.y - corner.y)
+    );
+    const radius = Math.max(3, Math.min(18, leg * 0.22));
+
+    let nearCorner = 0;
+    let insideFillet = 0;
+    for (const p of contour) {
+      const dCorner = Math.hypot(p.x - corner.x, p.y - corner.y);
+      if (dCorner > radius * 1.4 || dCorner < 0.5) continue;
+      nearCorner++;
+      const dEdge0 = perpendicularDistance(p, prev, corner);
+      const dEdge1 = perpendicularDistance(p, corner, next);
+      // Point is away from both sharp edges → on the round fillet
+      if (dEdge0 > 1.2 && dEdge1 > 1.2) insideFillet++;
+    }
+
+    if (nearCorner >= 4 && insideFillet / nearCorner >= 0.35) {
+      rounded++;
+    }
+  }
+  return rounded >= 2;
 }
 
 function rectangleFromCorners(

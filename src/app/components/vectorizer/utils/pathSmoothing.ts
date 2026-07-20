@@ -204,9 +204,17 @@ function pathLength(points: Point[], closed: boolean): number {
   return len;
 }
 
+import {
+  fitCurve,
+  fitClosedCurve,
+  beziersToSvgPath,
+  beziersToKnots,
+} from './cubicFit';
+
 /**
- * Full prep: clean → smooth → simplify → light re-smooth.
- * Extra smoothing after DP removes the hard kinks DP leaves at kept knots.
+ * Full prep for Schneider fitting: clean + smooth, light denoise only.
+ * Keep denser samples so rounded corners remain visible as arcs
+ * (heavy Douglas-Peucker is what turns rounds into hard corners).
  */
 export function prepareContourForBezier(
   points: Point[],
@@ -216,36 +224,19 @@ export function prepareContourForBezier(
   if (points.length < 2) return points;
 
   let pts = cleanContour(points, closed);
-  // Stronger pre-smooth kills pixel stairs before simplify
-  pts = smoothContour(pts, closed ? 3 : 2, closed);
+  pts = smoothContour(pts, closed ? 2 : 1, closed);
   pts = cleanContour(pts, closed);
 
   const len = pathLength(pts, closed);
-  // Slightly larger epsilon → fewer knots → smoother cubics
+  // Very light simplify — only strip near-collinear noise
   const epsilon = Math.max(
-    1.0,
-    simplifyEpsilonFromPrecision(precision, len) * (closed ? 1.15 : 0.85)
+    0.45,
+    simplifyEpsilonFromPrecision(precision, len) * 0.35
   );
   pts = closed ? simplifyClosedPath(pts, epsilon) : douglasPeucker(pts, epsilon);
   pts = cleanContour(pts, closed);
 
-  // Cap knot count, but never below a usable minimum for curves
-  const maxKnots = closed ? 48 : 64;
   const minKnots = closed ? 4 : 3;
-  if (pts.length > maxKnots) {
-    const boost = epsilon * Math.sqrt(pts.length / maxKnots);
-    const reduced = closed ? simplifyClosedPath(pts, boost) : douglasPeucker(pts, boost);
-    if (reduced.length >= minKnots) {
-      pts = cleanContour(reduced, closed);
-    }
-  }
-
-  // Soften remaining angular knots without collapsing the shape
-  if (pts.length >= 5) {
-    pts = smoothContour(pts, 1, closed);
-  }
-
-  // Absolute fallback — never return empty / degenerate
   if (pts.length < minKnots) {
     return points.length >= minKnots ? points : pts;
   }
@@ -253,7 +244,7 @@ export function prepareContourForBezier(
 }
 
 /**
- * One-shot: prepare contour then emit fitted Bezier SVG path.
+ * One-shot: prepare contour then fit Schneider cubics (true vector curves).
  */
 export function contourToSmoothBezierPath(
   points: Point[],
@@ -266,9 +257,7 @@ export function contourToSmoothBezierPath(
 
   const prepared = prepareContourForBezier(points, closed, precision);
 
-  // Only true rectangles / regular polygons keep straight edges.
-  // Everything else — including soft bends that look "almost polygonal" —
-  // should be cubic Beziers so curves don't stay hard-edged.
+  // Only true sharp rectangles stay polygonal.
   if (closed && prepared.length === 4 && looksRectangular(prepared)) {
     return { points: prepared, svgPath: polygonPath(prepared) };
   }
@@ -277,12 +266,45 @@ export function contourToSmoothBezierPath(
     return { points: prepared, svgPath: pointsToLinePath(prepared, closed) };
   }
 
-  const svgPath = pointsToFittedBezierPath(prepared, closed);
-  if (!svgPath || svgPath.length < 5) {
-    return { points: prepared, svgPath: pointsToLinePath(prepared, closed) };
-  }
+  // Error budget: lower precision → allow looser (smoother, fewer) cubics
+  const maxError = 0.9 + ((100 - Math.max(0, Math.min(100, precision))) / 100) * 2.4;
 
-  return { points: prepared, svgPath };
+  try {
+    const beziers = closed
+      ? fitClosedCurve(prepared, maxError)
+      : fitCurve(prepared, maxError);
+
+    if (beziers.length === 0) {
+      return {
+        points: prepared,
+        svgPath: pointsToFittedBezierPath(prepared, closed),
+      };
+    }
+
+    const svgPath = beziersToSvgPath(beziers, closed);
+    let knots = beziersToKnots(beziers);
+    if (closed && knots.length > 1) {
+      const first = knots[0];
+      const last = knots[knots.length - 1];
+      if (Math.hypot(first.x - last.x, first.y - last.y) < 0.5) {
+        knots = knots.slice(0, -1);
+      }
+    }
+
+    if (!svgPath || svgPath.length < 5) {
+      return {
+        points: prepared,
+        svgPath: pointsToFittedBezierPath(prepared, closed),
+      };
+    }
+
+    return { points: knots.length >= 2 ? knots : prepared, svgPath };
+  } catch {
+    return {
+      points: prepared,
+      svgPath: pointsToFittedBezierPath(prepared, closed),
+    };
+  }
 }
 
 function pointsToLinePath(points: Point[], closed: boolean): string {
@@ -438,4 +460,3 @@ function polygonPath(points: Point[]): string {
 function fmt(n: number): string {
   return (Math.round(n * 100) / 100).toFixed(2);
 }
-

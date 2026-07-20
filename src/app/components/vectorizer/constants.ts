@@ -14,18 +14,18 @@ import { IMAGE_UPLOAD_LIMITS } from '../../../utils/imageUploadGuard';
 
 // Default parameter values
 export const DEFAULT_VALUES = {
-  // Step 3: Preprocessing
-  BLUR_RADIUS: 2,
+  // Step 3: Preprocessing — keep blur low so text/corners stay sharp
+  BLUR_RADIUS: 0,
   THRESHOLD: 128,
-  MIN_AREA: 20,
+  MIN_AREA: 12,
   COLOR_COUNT: 4,
   USE_AUTO_THRESHOLD: true,
   
-  // Step 4: Vectorization
-  PATH_PRECISION: 30,
+  // Step 4: Vectorization — higher precision = tighter Potrace curves
+  PATH_PRECISION: 70,
   SIMPLIFY_PATH: true,
   STROKE_WIDTH: 3, // 🆕 Default stroke width for line mode
-  DETAIL_LEVEL: 50, // 🆕 Detail preservation level (0-100, higher = keep more paths)
+  DETAIL_LEVEL: 70, // 🆕 Detail preservation level (0-100, higher = keep more paths)
   
   // Display settings
   IMAGE_OPACITY: 0.3,

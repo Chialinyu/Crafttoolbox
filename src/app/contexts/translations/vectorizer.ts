@@ -16,8 +16,8 @@ export const vectorizerTranslations = {
   
   // Mode Selection
   modeLineTitle: { zh: '線條模式', en: 'Line Mode' },
-  modeLineDesc: { zh: '產生可調粗細的中心線或色塊外框', en: 'Create adjustable centerlines or color-region outlines' },
-  modeLineUseCase: { zh: '適合：線稿、Logo、Outline Icon', en: 'Best for: Line art, logos, outline icons' },
+  modeLineDesc: { zh: '產生線稿輪廓、中心線或色塊外框', en: 'Create contour outlines, centerlines, or color-region outlines' },
+  modeLineUseCase: { zh: '適合：線稿、Logo、Outline Icon、文字', en: 'Best for: Line art, logos, outline icons, text' },
   
   modeFillTitle: { zh: '填充模式', en: 'Fill Mode' },
   modeFillDesc: { zh: '多色封閉區塊向量化', en: 'Multi-color filled region vectorization' },
@@ -28,9 +28,11 @@ export const vectorizerTranslations = {
   modeMixedUseCase: { zh: '適合：Filled Icon、貼圖、扁平插圖', en: 'Best for: Filled icons, stickers, flat illustrations' },
 
   lineSource: { zh: '線條來源', en: 'Line Source' },
+  lineSourceContour: { zh: '輪廓描邊', en: 'Contour' },
+  lineSourceContourDesc: { zh: '以 Potrace 追蹤黑白線稿外框，保留文字與不規則形轉角', en: 'Trace binary artwork outlines with Potrace — keeps text and irregular corners' },
   lineSourceSkeleton: { zh: '線稿中心線', en: 'Centerline' },
   lineSourceSkeletonDesc: { zh: '將原圖中的細線骨架化，保留線條中心與偵測到的粗度', en: 'Skeletonize thin artwork into centerlines with detected width' },
-  lineSourceOutline: { zh: '色塊外框', en: 'Color Outlines' },
+  lineSourceOutline: { zh: '色塊外框', en: 'Color' },
   lineSourceOutlineDesc: { zh: '依顏色分群，自動沿不同色塊的邊界產生外框', en: 'Cluster colors and trace the boundaries between regions' },
   
   selected: { zh: '已選', en: 'Selected' },

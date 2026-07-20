@@ -68,7 +68,7 @@ export function detectCircleOrEllipse(
   // Check if it's nearly circular (aspect ratio close to 1)
   const aspectRatio = Math.max(a, b) / Math.min(a, b);
 
-  if (aspectRatio < 1.15 && fillRatio >= 0.60) {
+  if (aspectRatio < 1.15 && fillRatio >= 0.55) {
     // It's a circle! Use <circle> primitive
     const r = (a + b) / 2; // Average radius
     return {
@@ -79,11 +79,11 @@ export function detectCircleOrEllipse(
     };
   }
 
-  if (aspectRatio > 2.2) return null;
+  if (aspectRatio > 2.4) return null;
 
   // It's an ellipse, use <ellipse> primitive
   // Require fill ratio roughly matching π*ab / AABB (AABB of rotated ellipse varies).
-  if (fillRatio < 0.55) return null;
+  if (fillRatio < 0.50) return null;
 
   const angleDeg = (angle * 180) / Math.PI;
   return {

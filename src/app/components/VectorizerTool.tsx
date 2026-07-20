@@ -31,7 +31,7 @@ import type {
 } from './vectorizer/utils/vectorization';
 
 type VectorizationMode = 'line' | 'fill' | 'mixed';
-type LineStyle = 'skeleton' | 'color-outline';
+type LineStyle = 'outline' | 'skeleton' | 'color-outline';
 type Step = 1 | 2 | 3 | 4 | 5;
 
 /**
@@ -69,7 +69,7 @@ export const VectorizerTool: React.FC<VectorizerToolProps> = ({ onBack }) => {
   // Step 2: Mode
   const [mode, setMode] = useState<VectorizationMode>('line');
   const [tempMode, setTempMode] = useState<VectorizationMode>('line'); // For edit mode
-  const [lineStyle, setLineStyle] = useState<LineStyle>('skeleton');
+  const [lineStyle, setLineStyle] = useState<LineStyle>('outline');
   const [isGeneratingModePreview, setIsGeneratingModePreview] = useState(false); // Loading state for mode preview
   
   // ✨ NEW: Mode preview cache - store results for each mode to avoid recalculation
@@ -197,7 +197,7 @@ export const VectorizerTool: React.FC<VectorizerToolProps> = ({ onBack }) => {
     // Reset all parameters to defaults
     setMode('line');
     setTempMode('line');
-    setLineStyle('skeleton');
+    setLineStyle('outline');
     setStrokeWidthMultiplier(1);
     setStrokeColor('#000000');
     setStrokeLineCap('round');

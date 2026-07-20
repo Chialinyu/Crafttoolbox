@@ -23,8 +23,8 @@ interface PreprocessPanelProps {
   colorCount?: number;
   onColorCountChange?: (value: number) => void;
   mode?: 'line' | 'fill' | 'mixed';
-  lineStyle?: 'skeleton' | 'color-outline';
-  onLineStyleChange?: (value: 'skeleton' | 'color-outline') => void;
+  lineStyle?: 'outline' | 'skeleton' | 'color-outline';
+  onLineStyleChange?: (value: 'outline' | 'skeleton' | 'color-outline') => void;
   isEditMode?: boolean;
   onCancel?: () => void;
   previewImageData?: ImageData | null;
@@ -60,13 +60,13 @@ export const PreprocessPanel: React.FC<PreprocessPanelProps> = ({
   onMergeColors,
   selectedColorIndices,
   onColorSelect,
-  lineStyle = 'skeleton',
+  lineStyle = 'outline',
   onLineStyleChange,
 }) => {
   const { t } = useLanguage();
 
   // Determine which parameters to show based on mode
-  const showThreshold = mode === 'line' && lineStyle === 'skeleton';
+  const showThreshold = mode === 'line' && lineStyle !== 'color-outline';
   const showColorCount = mode === 'fill' || mode === 'mixed' || (mode === 'line' && lineStyle === 'color-outline');
 
   // State to hold extracted colors and selection
@@ -91,26 +91,43 @@ export const PreprocessPanel: React.FC<PreprocessPanelProps> = ({
       {mode === 'line' && (
         <fieldset className="space-y-2">
           <legend className="text-sm font-medium">{t('lineSource')}</legend>
-          <div className="grid grid-cols-2 gap-2">
+          <div className="grid grid-cols-3 gap-2">
             <Button
               type="button"
-              variant={lineStyle === 'skeleton' ? 'default' : 'outline'}
-              aria-pressed={lineStyle === 'skeleton'}
-              onClick={() => onLineStyleChange?.('skeleton')}
+              variant={lineStyle === 'outline' ? 'default' : 'outline'}
+              aria-pressed={lineStyle === 'outline'}
+              className="min-w-0 px-2 text-xs whitespace-normal leading-tight h-auto min-h-9 py-2"
+              onClick={() => onLineStyleChange?.('outline')}
             >
-              {t('lineSourceSkeleton')}
+              {t('lineSourceContour')}
             </Button>
             <Button
               type="button"
               variant={lineStyle === 'color-outline' ? 'default' : 'outline'}
               aria-pressed={lineStyle === 'color-outline'}
+              className="min-w-0 px-2 text-xs whitespace-normal leading-tight h-auto min-h-9 py-2"
               onClick={() => onLineStyleChange?.('color-outline')}
             >
               {t('lineSourceOutline')}
             </Button>
+            <Button
+              type="button"
+              variant={lineStyle === 'skeleton' ? 'default' : 'outline'}
+              aria-pressed={lineStyle === 'skeleton'}
+              className="min-w-0 px-2 text-xs whitespace-normal leading-tight h-auto min-h-9 py-2"
+              onClick={() => onLineStyleChange?.('skeleton')}
+            >
+              {t('lineSourceSkeleton')}
+            </Button>
           </div>
           <p className="text-xs text-muted-foreground">
-            {t(lineStyle === 'skeleton' ? 'lineSourceSkeletonDesc' : 'lineSourceOutlineDesc')}
+            {t(
+              lineStyle === 'skeleton'
+                ? 'lineSourceSkeletonDesc'
+                : lineStyle === 'color-outline'
+                  ? 'lineSourceOutlineDesc'
+                  : 'lineSourceContourDesc'
+            )}
           </p>
         </fieldset>
       )}

@@ -117,12 +117,15 @@ export interface VectorPath {
 
 export interface VectorizationConfig {
   mode: 'stroke' | 'fill' | 'mixed';
-  lineStyle?: 'skeleton' | 'color-outline';
+  /** outline = Potrace contours (default); skeleton = centerline; color-outline = cluster boundaries */
+  lineStyle?: 'outline' | 'skeleton' | 'color-outline';
   precision: number;
   minArea: number;
   simplify: boolean;
   useImprovedTracing?: boolean; // 🆕 NEW: Use improved contour tracing (default: true)
   detailLevel?: number; // 🆕 Detail preservation level (0-100, default: 50) - controls path filtering aggressiveness
+  /** When true, force near-perfect rect/ellipse/triangle fits. Off by default — irregular shapes must stay freeform. */
+  fitGeometry?: boolean;
   isCancelledRef?: React.MutableRefObject<boolean>; // Optional cancellation flag
   labels?: Uint8Array; // 🎯 Cluster labels from preprocessing (sequential: 0, 1, 2, ...)
   clusterCount?: number; // 🎯 Number of clusters
@@ -283,8 +286,44 @@ function cropMask(
       cropped[dstIdx] = mask[srcIdx];
     }
   }
-  
+
   return cropped;
+}
+
+/**
+ * Pad a mask with empty border so ink never touches the bitmap edge.
+ * Potrace creates vertical/horizontal "spike" artifacts when shapes touch the crop border.
+ */
+function padMask(
+  mask: Uint8Array,
+  width: number,
+  height: number,
+  pad: number
+): { mask: Uint8Array; width: number; height: number; pad: number } {
+  if (pad <= 0) {
+    return { mask, width, height, pad: 0 };
+  }
+  const w = width + pad * 2;
+  const h = height + pad * 2;
+  const out = new Uint8Array(w * h);
+  for (let y = 0; y < height; y++) {
+    out.set(mask.subarray(y * width, (y + 1) * width), (y + pad) * w + pad);
+  }
+  return { mask: out, width: w, height: h, pad };
+}
+
+/** SVG path number: 12, -3.5, .25, 1.2e-3 */
+const SVG_PATH_NUMBER_RE = /^-?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?/;
+
+function readSvgPathNumber(
+  pathString: string,
+  start: number
+): { value: number; length: number } | null {
+  const match = pathString.substring(start).match(SVG_PATH_NUMBER_RE);
+  if (!match) return null;
+  const value = parseFloat(match[0]);
+  if (!Number.isFinite(value)) return null;
+  return { value, length: match[0].length };
 }
 
 /**
@@ -412,10 +451,10 @@ function scaleSVGPath(pathString: string, scale: number): string {
         }
         
         // Parse number
-        const numMatch = pathString.substring(i).match(/^-?\d+\.?\d*/);
-        if (!numMatch) break;
+        const numParsed = readSvgPathNumber(pathString, i);
+        if (!numParsed) break;
         
-        const num = parseFloat(numMatch[0]);
+        const num = numParsed.value;
         let scaled = num;
         
         // Scale coordinates (all coordinates need scaling, not just X/Y distinction)
@@ -430,8 +469,8 @@ function scaleSVGPath(pathString: string, scale: number): string {
           scaled = num * scale;
         }
         
-        result += scaled.toString();
-        i += numMatch[0].length;
+        result += Number.isInteger(scaled) ? String(scaled) : scaled.toFixed(3).replace(/\.?0+$/, '');
+        i += numParsed.length;
         coordIndex++;
       }
     } else {
@@ -532,6 +571,25 @@ function extractPathFromSVG(svg: string): string | null {
 }
 
 /**
+ * Split a combined SVG path into subpaths at each absolute moveto (M).
+ * Keeps relative m attached to the previous subpath.
+ */
+function splitSvgPathSubpaths(pathData: string): string[] {
+  const trimmed = pathData.trim();
+  if (!trimmed) return [];
+
+  const parts: string[] = [];
+  const re = /M[^M]*/g;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(trimmed)) !== null) {
+    const part = match[0].trim();
+    if (part.length >= 5) parts.push(part);
+  }
+
+  return parts.length > 0 ? parts : [trimmed];
+}
+
+/**
  * Trace a binary mask using Potrace to generate smooth bezier curves
  * Returns a Promise that resolves to the SVG path string
  */
@@ -564,8 +622,11 @@ function traceWithPotrace(
         return;
       }
       
-      // 🔧 FIX: Crop mask to bounding box
+      // 🔧 FIX: Crop mask to bounding box, then pad so ink never touches the bitmap edge.
+      // Tight crops make Potrace emit vertical/horizontal spikes along the border.
+      const POTRACE_EDGE_PAD = 2;
       const croppedMask = cropMask(mask, width, height, bbox);
+      const padded = padMask(croppedMask, bbox.width, bbox.height, POTRACE_EDGE_PAD);
       
       // 🚀 NEW: Complexity-based adaptive downsampling
       // Strategy:
@@ -573,39 +634,38 @@ function traceWithPotrace(
       // - Large regions (>500K px) → Downsample to 500K
       // - Complex textures (complexity > 20) → Estimate and decide
       
-      const regionPixels = bbox.width * bbox.height;
+      const regionPixels = padded.width * padded.height;
       const perimeter = estimatePerimeter(mask, width, height, bbox);
-      const complexity = perimeter / Math.sqrt(regionPixels);
+      const complexity = perimeter / Math.sqrt(Math.max(1, bbox.width * bbox.height));
       const aspectRatio = bbox.width / bbox.height;
       
       let downsampleScale = 1.0;
-      let processWidth = bbox.width;
-      let processHeight = bbox.height;
-      let processMask = croppedMask;
+      let processWidth = padded.width;
+      let processHeight = padded.height;
+      let processMask = padded.mask;
       
-      // 🔧 FIX: Skip extreme aspect ratios (very thin lines/strips)
-      // Potrace has bugs with extreme shapes (width/height >= 20 or <= 0.05)
-      if (aspectRatio >= 20 || aspectRatio <= 0.05) {
+      // Skip only extreme 1px strips — thin letter strokes (e.g. 3×40) still matter for text
+      if (aspectRatio >= 40 || aspectRatio <= 0.025) {
         resolve(null);
         return;
       }
       
-      if (complexity > 20) {
-        // Very complex texture - skip Potrace entirely
-        resolve(null);
-        return;
-      } else if (regionPixels > 500_000) {
-        // Large region - downsample to 500K pixels
+      // Prefer downsampling over skipping: complex glyphs (CJK, logos) need Potrace
+      if (regionPixels > 500_000) {
         downsampleScale = Math.sqrt(500_000 / regionPixels);
-        processWidth = Math.round(bbox.width * downsampleScale);
-        processHeight = Math.round(bbox.height * downsampleScale);
-        processMask = resizeMask(croppedMask, bbox.width, bbox.height, processWidth, processHeight);
-      } else if (regionPixels > 100_000 && complexity > 10) {
-        // Medium region with moderate complexity - mild downsample
-        downsampleScale = Math.sqrt(100_000 / regionPixels);
-        processWidth = Math.round(bbox.width * downsampleScale);
-        processHeight = Math.round(bbox.height * downsampleScale);
-        processMask = resizeMask(croppedMask, bbox.width, bbox.height, processWidth, processHeight);
+        processWidth = Math.round(padded.width * downsampleScale);
+        processHeight = Math.round(padded.height * downsampleScale);
+        processMask = resizeMask(padded.mask, padded.width, padded.height, processWidth, processHeight);
+      } else if (regionPixels > 80_000 && complexity > 12) {
+        downsampleScale = Math.sqrt(80_000 / regionPixels);
+        processWidth = Math.round(padded.width * downsampleScale);
+        processHeight = Math.round(padded.height * downsampleScale);
+        processMask = resizeMask(padded.mask, padded.width, padded.height, processWidth, processHeight);
+      } else if (complexity > 28 && regionPixels > 20_000) {
+        downsampleScale = Math.sqrt(20_000 / regionPixels);
+        processWidth = Math.max(8, Math.round(padded.width * downsampleScale));
+        processHeight = Math.max(8, Math.round(padded.height * downsampleScale));
+        processMask = resizeMask(padded.mask, padded.width, padded.height, processWidth, processHeight);
       }
       
       // Convert processed mask to ImageData
@@ -628,13 +688,13 @@ function traceWithPotrace(
       // 🔧 FIX: Convert canvas to data URL (Potrace expects image data, not raw canvas)
       const dataURL = canvas.toDataURL('image/png');
       
-      // Potrace options
-      const tolerance = Math.max(0.2, (100 - config.precision) / 100);
+      // Potrace options — moderate optTolerance (edge pad already reduces border spikes)
+      const tolerance = Math.max(0.2, ((100 - config.precision) / 100) * 0.9);
       const params = {
         threshold: 128,
-        turdSize: config.minArea,  // Minimum area (remove noise)
-        optCurve: true,             // Enable curve optimization ✅ KEY!
-        optTolerance: tolerance,    // Optimization tolerance
+        turdSize: Math.max(2, Math.min(config.minArea, 50)),
+        optCurve: true,
+        optTolerance: tolerance,
         color: 'black',
         background: 'transparent',
       };
@@ -673,8 +733,12 @@ function traceWithPotrace(
           scaledPath = scaleSVGPath(pathString, upscale);
         }
         
-        // 🔧 FIX: Translate path coordinates back to original position
-        const translatedPath = translateSVGPath(scaledPath, bbox.x, bbox.y);
+        // Translate from padded-crop space back to full image (account for edge pad)
+        const translatedPath = translateSVGPath(
+          scaledPath,
+          bbox.x - POTRACE_EDGE_PAD,
+          bbox.y - POTRACE_EDGE_PAD
+        );
         
         resolve(translatedPath);
       });
@@ -742,10 +806,10 @@ function translateSVGPath(pathString: string, offsetX: number, offsetY: number):
         }
         
         // Parse number
-        const numMatch = pathString.substring(i).match(/^-?\d+\.?\d*/);
-        if (!numMatch) break;
+        const numParsed = readSvgPathNumber(pathString, i);
+        if (!numParsed) break;
         
-        const num = parseFloat(numMatch[0]);
+        const num = numParsed.value;
         let translated = num;
         
         // Translate only absolute coordinates
@@ -780,8 +844,10 @@ function translateSVGPath(pathString: string, offsetX: number, offsetY: number):
         }
         // Relative commands (lowercase) don't need translation
         
-        result += translated.toString();
-        i += numMatch[0].length;
+        result += Number.isInteger(translated)
+          ? String(translated)
+          : translated.toFixed(3).replace(/\.?0+$/, '');
+        i += numParsed.length;
         coordIndex++;
       }
     } else {
@@ -1081,8 +1147,99 @@ export async function vectorizeImage(
   const tolerance = Math.max(1.2, ((100 - config.precision) / 100) * 4);
   
   try {
-    // 🎨 STROKE MODE: HYBRID TRACE (closed shapes + centerlines)
-    if (config.mode === 'stroke' && config.lineStyle !== 'color-outline') {
+    // 🖊️ LINE OUTLINE (default): one Potrace pass on the binary — safe for text/detail
+    // (Per-component flood-fill + full-canvas masks OOMs / greyscreens large images.)
+    if (config.mode === 'stroke' && config.lineStyle !== 'color-outline' && config.lineStyle !== 'skeleton') {
+      const pixelCount = width * height;
+      const binary = new Uint8Array(pixelCount);
+      let inkCount = 0;
+      for (let i = 0; i < pixelCount; i++) {
+        const isInk = data[i * 4] < 128;
+        binary[i] = isInk ? 255 : 0;
+        if (isInk) inkCount++;
+      }
+
+      // Dark-background scans: invert so ink is the minority shape Potrace traces
+      if (inkCount > pixelCount * 0.55) {
+        for (let i = 0; i < pixelCount; i++) {
+          binary[i] = binary[i] ? 0 : 255;
+        }
+      }
+
+      let svgPath: string | null = null;
+      try {
+        const POTRACE_TIMEOUT_MS = 15000;
+        let timeoutId: ReturnType<typeof setTimeout> | null = null;
+        const potracePromise = traceWithPotrace(binary, width, height, config);
+        const timeoutPromise = new Promise<string | null>((resolve) => {
+          timeoutId = setTimeout(() => resolve(null), POTRACE_TIMEOUT_MS);
+        });
+        svgPath = await Promise.race([potracePromise, timeoutPromise]);
+        if (timeoutId !== null) clearTimeout(timeoutId);
+      } catch (error) {
+        console.warn('Outline Potrace failed:', error);
+        svgPath = null;
+      }
+
+      if (svgPath) {
+        for (const subpath of splitSvgPathSubpaths(svgPath)) {
+          paths.push({
+            points: [],
+            closed: true,
+            type: 'stroke',
+            color: '#000000',
+            svgPath: subpath,
+            strokeWidth: 2,
+          });
+        }
+      } else {
+        const contours = findBoundaryContours(
+          binary,
+          width,
+          height,
+          400,
+          config.isCancelledRef,
+          true
+        );
+        for (const contour of contours) {
+          if (config.isCancelledRef?.current) return paths;
+          if (contour.length < 3) continue;
+          if (calculateArea(contour) < config.minArea) continue;
+          try {
+            const fitted = contourToSmoothBezierPath(contour, true, config.precision);
+            paths.push({
+              points: fitted.points,
+              closed: true,
+              type: 'stroke',
+              color: '#000000',
+              svgPath: fitted.svgPath,
+              strokeWidth: 2,
+            });
+          } catch {
+            paths.push({
+              points: contour,
+              closed: true,
+              type: 'stroke',
+              color: '#000000',
+              svgPath: pointsToSVGPath(contour, true),
+              strokeWidth: 2,
+            });
+          }
+        }
+      }
+
+      try {
+        const { filterInsignificantPaths, dedupeOverlappingStrokePaths } = await import('./pathFilter');
+        const filteredPaths = filterInsignificantPaths(paths, width, height, config.detailLevel ?? 70);
+        return dedupeOverlappingStrokePaths(filteredPaths);
+      } catch (error) {
+        console.warn('Outline path filter failed, returning raw paths:', error);
+        return paths;
+      }
+    }
+
+    // 🦴 CENTERLINE (optional): Zhang-Suen skeleton — for thin stroke width control
+    if (config.mode === 'stroke' && config.lineStyle === 'skeleton') {
       // Step 0: Gaussian blur preprocessing
       const blurred = gaussianBlur(data, width, height, 1.0);
       
@@ -1315,7 +1472,10 @@ export async function vectorizeImage(
               continue;
             }
 
-            const geometricPath = tryFitRegionGeometry(regionMask, width, height);
+            // Geometry fit is opt-in only — irregular shapes must not be forced into rect/ellipse.
+            const geometricPath = config.fitGeometry
+              ? tryFitRegionGeometry(regionMask, width, height)
+              : null;
             if (geometricPath) {
               const regionPath: VectorPath = {
                 points: geometricPath.points,
@@ -1352,12 +1512,10 @@ export async function vectorizeImage(
             // - Potrace now handles complexity internally via downsampling
             // - Only skip after timeout (which should be much rarer now)
             
-            if (config.mode === 'stroke' || potraceUnavailable) {
-              // Color-outline mode only needs the boundary contour. Potrace adds
-              // no fill quality here. After one timeout, later regions use the
-              // contour fallback instead of repeating the same wait.
+            if (potraceUnavailable) {
+              // After one timeout, later regions use the contour fallback.
             } else {
-              // Level 1: Try Potrace first (best quality for all image types)
+              // Level 1: Try Potrace first (best quality for fill, mixed, and color-outline)
               try {
                 // 🧪 TEST: Timeout protection - if Potrace hangs, fallback after 15s
                 const POTRACE_TIMEOUT_MS = 5000;
@@ -1398,7 +1556,9 @@ export async function vectorizeImage(
                     svgPath: potracePathString,
                   };
 
-                  paths.push(regionPath);
+                  if (config.mode !== 'stroke') {
+                    paths.push(regionPath);
+                  }
                   if (config.mode !== 'fill' && !isCanvasFrame) {
                     outlinePaths.push({
                       ...regionPath,
@@ -1459,12 +1619,14 @@ export async function vectorizeImage(
 
               for (const { contour } of contoursToEmit) {
                 
-                // Prefer geometric primitives over Bezier-smoothed pixel contours.
+                // Prefer geometric primitives only when explicitly enabled.
                 const simplifiedForGeom =
                   config.simplify && tolerance > 0
                     ? simplifyPath(contour, tolerance)
                     : contour;
-                const contourGeometry = tryFitContourGeometry(simplifiedForGeom, width, height);
+                const contourGeometry = config.fitGeometry
+                  ? tryFitContourGeometry(simplifiedForGeom, width, height)
+                  : null;
                 let svgPath: string | undefined;
                 let primitive: ShapePrimitive | undefined;
                 let points = simplifiedForGeom;
@@ -1715,12 +1877,12 @@ function tryFitRegionGeometry(
   const bboxAspect = Math.max(bboxWidth, bboxHeight) / Math.max(1, Math.min(bboxWidth, bboxHeight));
   const isLineLike = bboxAspect > 2.8 && fillRatio > 0.55;
 
-  if (!isLineLike && fillRatio >= 0.62 && fillRatio <= 0.88) {
+  if (!isLineLike && fillRatio >= 0.58 && fillRatio <= 0.92) {
     const area = pixels.length;
     const perimeter = calculatePerimeter(pixels, width, height);
     if (perimeter > 0) {
       const circularity = (4 * Math.PI * area) / (perimeter * perimeter);
-      if (circularity >= 0.68) {
+      if (circularity >= 0.58) {
         const ellipse = fitEllipse(pixels);
         if (ellipse && ellipse.a >= 3 && ellipse.b >= 3) {
           const ellipseArea = Math.PI * ellipse.a * ellipse.b;
@@ -1735,7 +1897,7 @@ function tryFitRegionGeometry(
           ].filter((value) => value > 0).length;
 
           // Keep ellipses relatively round; long sausages misclassify as ellipses.
-          if (areaRatio >= 0.84 && aspectRatio <= 2.2 && cornerHits < 2) {
+          if (areaRatio >= 0.78 && aspectRatio <= 2.4 && cornerHits < 3) {
             const cos = Math.cos(ellipse.angle);
             const sin = Math.sin(ellipse.angle);
             let radialError = 0;
@@ -1746,12 +1908,12 @@ function tryFitRegionGeometry(
               const localX = (dx * cos + dy * sin) / ellipse.a;
               const localY = (-dx * sin + dy * cos) / ellipse.b;
               const radius = Math.hypot(localX, localY);
-              if (radius >= 0.9) {
+              if (radius >= 0.85) {
                 radialError += (radius - 1) * (radius - 1);
                 boundarySamples++;
               }
             }
-            if (boundarySamples >= 8 && Math.sqrt(radialError / boundarySamples) <= 0.08) {
+            if (boundarySamples >= 6 && Math.sqrt(radialError / boundarySamples) <= 0.12) {
               const primitive = detectCircleOrEllipse(pixels, 0.9);
               if (primitive) {
                 const points: Point[] = [
@@ -1800,7 +1962,79 @@ function tryFitContourGeometry(
 } | null {
   if (contour.length < 8) return null;
 
-  // 1) Corner-based rectangle (handles jagged pixel contours)
+  // 1) Circle / ellipse FIRST — avoid collapsing rounds into sharp rects/polylines.
+  {
+    const ellipse = fitEllipse(contour);
+    if (ellipse && ellipse.a >= 3 && ellipse.b >= 3) {
+      const aspectRatio = Math.max(ellipse.a, ellipse.b) / Math.min(ellipse.a, ellipse.b);
+      if (aspectRatio <= 2.4) {
+        const cos = Math.cos(ellipse.angle);
+        const sin = Math.sin(ellipse.angle);
+        let radialError = 0;
+        let quadrantMask = 0;
+        for (const point of contour) {
+          const dx = point.x - ellipse.cx;
+          const dy = point.y - ellipse.cy;
+          const localX = (dx * cos + dy * sin) / ellipse.a;
+          const localY = (-dx * sin + dy * cos) / ellipse.b;
+          const radius = Math.hypot(localX, localY);
+          radialError += (radius - 1) * (radius - 1);
+          if (localX >= 0 && localY >= 0) quadrantMask |= 1;
+          if (localX < 0 && localY >= 0) quadrantMask |= 2;
+          if (localX < 0 && localY < 0) quadrantMask |= 4;
+          if (localX >= 0 && localY < 0) quadrantMask |= 8;
+        }
+        const rms = Math.sqrt(radialError / contour.length);
+        if (quadrantMask === 15 && rms <= 0.11) {
+          let contourLen = 0;
+          for (let i = 0; i < contour.length; i++) {
+            const a = contour[i];
+            const b = contour[(i + 1) % contour.length];
+            contourLen += Math.hypot(b.x - a.x, b.y - a.y);
+          }
+          const ellipsePerim =
+            Math.PI *
+            (3 * (ellipse.a + ellipse.b) -
+              Math.sqrt((3 * ellipse.a + ellipse.b) * (ellipse.a + 3 * ellipse.b)));
+          const perimRatio =
+            Math.min(contourLen, ellipsePerim) / Math.max(contourLen, ellipsePerim);
+          if (perimRatio >= 0.72) {
+            const primitive =
+              aspectRatio < 1.18
+                ? ({
+                    type: 'circle' as const,
+                    cx: ellipse.cx,
+                    cy: ellipse.cy,
+                    r: (ellipse.a + ellipse.b) / 2,
+                  })
+                : ({
+                    type: 'ellipse' as const,
+                    cx: ellipse.cx,
+                    cy: ellipse.cy,
+                    rx: ellipse.a,
+                    ry: ellipse.b,
+                    angle: (ellipse.angle * 180) / Math.PI,
+                  });
+
+            const points: Point[] = [
+              { x: ellipse.cx + ellipse.a * cos, y: ellipse.cy + ellipse.a * sin },
+              { x: ellipse.cx - ellipse.b * sin, y: ellipse.cy + ellipse.b * cos },
+              { x: ellipse.cx - ellipse.a * cos, y: ellipse.cy - ellipse.a * sin },
+              { x: ellipse.cx + ellipse.b * sin, y: ellipse.cy - ellipse.b * cos },
+            ];
+
+            return {
+              points,
+              svgPath: ellipseToSVGPath(ellipse),
+              primitive,
+            };
+          }
+        }
+      }
+    }
+  }
+
+  // 2) Corner-based rectangle
   const cornerRect = fitRectangleFromContour(contour, canvasWidth, canvasHeight);
   if (cornerRect) {
     const hw = cornerRect.width / 2;
@@ -1838,7 +2072,7 @@ function tryFitContourGeometry(
   const bboxWidth = maxX - minX + 1;
   const bboxHeight = maxY - minY + 1;
 
-  // 2) Axis-aligned rect when contour hugs the bbox edges
+  // 3) Axis-aligned rect when contour hugs the bbox edges
   const edgeScore = scoreContourRectangle(contour, minX, maxX, minY, maxY);
   if (edgeScore >= 0.75 && bboxWidth >= 4 && bboxHeight >= 4) {
     const rectangle = {
@@ -1868,79 +2102,7 @@ function tryFitContourGeometry(
     }
   }
 
-  // 3) Circle / ellipse from contour — do NOT use fillRatio on boundary points.
-  const ellipse = fitEllipse(contour);
-  if (!ellipse || ellipse.a < 4 || ellipse.b < 4) return null;
-
-  const aspectRatio = Math.max(ellipse.a, ellipse.b) / Math.min(ellipse.a, ellipse.b);
-  // Reject elongated line-like loops misread as ellipses.
-  if (aspectRatio > 2.0) return null;
-
-  const cos = Math.cos(ellipse.angle);
-  const sin = Math.sin(ellipse.angle);
-  let radialError = 0;
-  let quadrantMask = 0;
-  for (const point of contour) {
-    const dx = point.x - ellipse.cx;
-    const dy = point.y - ellipse.cy;
-    const localX = (dx * cos + dy * sin) / ellipse.a;
-    const localY = (-dx * sin + dy * cos) / ellipse.b;
-    const radius = Math.hypot(localX, localY);
-    radialError += (radius - 1) * (radius - 1);
-    if (localX >= 0 && localY >= 0) quadrantMask |= 1;
-    if (localX < 0 && localY >= 0) quadrantMask |= 2;
-    if (localX < 0 && localY < 0) quadrantMask |= 4;
-    if (localX >= 0 && localY < 0) quadrantMask |= 8;
-  }
-  // Need points in all quadrants — rejects open arcs / single-side strokes.
-  if (quadrantMask !== 15) return null;
-
-  const rms = Math.sqrt(radialError / contour.length);
-  if (rms > 0.06) return null;
-
-  // Perimeter sanity: contour length should be near ellipse circumference.
-  let contourLen = 0;
-  for (let i = 0; i < contour.length; i++) {
-    const a = contour[i];
-    const b = contour[(i + 1) % contour.length];
-    contourLen += Math.hypot(b.x - a.x, b.y - a.y);
-  }
-  const ellipsePerim =
-    Math.PI *
-    (3 * (ellipse.a + ellipse.b) -
-      Math.sqrt((3 * ellipse.a + ellipse.b) * (ellipse.a + 3 * ellipse.b)));
-  const perimRatio = Math.min(contourLen, ellipsePerim) / Math.max(contourLen, ellipsePerim);
-  if (perimRatio < 0.82) return null;
-
-  const primitive =
-    aspectRatio < 1.12
-      ? ({
-          type: 'circle' as const,
-          cx: ellipse.cx,
-          cy: ellipse.cy,
-          r: (ellipse.a + ellipse.b) / 2,
-        })
-      : ({
-          type: 'ellipse' as const,
-          cx: ellipse.cx,
-          cy: ellipse.cy,
-          rx: ellipse.a,
-          ry: ellipse.b,
-          angle: (ellipse.angle * 180) / Math.PI,
-        });
-
-  const points: Point[] = [
-    { x: ellipse.cx + ellipse.a * cos, y: ellipse.cy + ellipse.a * sin },
-    { x: ellipse.cx - ellipse.b * sin, y: ellipse.cy + ellipse.b * cos },
-    { x: ellipse.cx - ellipse.a * cos, y: ellipse.cy - ellipse.a * sin },
-    { x: ellipse.cx + ellipse.b * sin, y: ellipse.cy - ellipse.b * cos },
-  ];
-
-  return {
-    points,
-    svgPath: ellipseToSVGPath(ellipse),
-    primitive,
-  };
+  return null;
 }
 
 /** Boundary pixels of a filled region (4-connected exterior). */

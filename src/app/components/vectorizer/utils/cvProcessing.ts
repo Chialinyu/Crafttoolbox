@@ -319,7 +319,7 @@ export interface PreprocessConfig {
   useAutoThreshold: boolean;
   colorCount?: number; // For fill/mixed and color-outline clustering
   mode?: 'line' | 'fill' | 'mixed';
-  lineStyle?: 'skeleton' | 'color-outline';
+  lineStyle?: 'outline' | 'skeleton' | 'color-outline';
 }
 
 /**
