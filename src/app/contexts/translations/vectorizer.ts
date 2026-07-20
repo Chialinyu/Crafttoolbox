@@ -24,17 +24,19 @@ export const vectorizerTranslations = {
   modeFillUseCase: { zh: '適合：插畫、平面設計、剪影', en: 'Best for: Illustrations, flat designs, silhouettes' },
   
   modeMixedTitle: { zh: '混合模式', en: 'Mixed Mode' },
-  modeMixedDesc: { zh: '保留色塊填色並自動加上外框', en: 'Keep filled regions and add automatic outlines' },
+  modeMixedDesc: { zh: '保留色塊填色，並可選擇輪廓、色塊外框或中心線描邊', en: 'Keep filled regions and choose contour, color-border, or centerline strokes' },
   modeMixedUseCase: { zh: '適合：Filled Icon、貼圖、扁平插圖', en: 'Best for: Filled icons, stickers, flat illustrations' },
 
   lineSource: { zh: '線條來源', en: 'Line Source' },
   lineSourceContour: { zh: '輪廓描邊', en: 'Contour' },
   lineSourceContourDesc: { zh: '以 Potrace 追蹤黑白線稿外框，保留文字與不規則形轉角', en: 'Trace binary artwork outlines with Potrace — keeps text and irregular corners' },
+  lineSourceContourMixedDesc: { zh: '色塊填色後，再以輪廓線描邊內容外框', en: 'Keep color fills, then stroke content with contour outlines' },
   lineSourceSkeleton: { zh: '線稿中心線', en: 'Centerline' },
   lineSourceSkeletonDesc: { zh: '將原圖中的細線骨架化，保留線條中心與偵測到的粗度', en: 'Skeletonize thin artwork into centerlines with detected width' },
+  lineSourceSkeletonMixedDesc: { zh: '色塊填色後，以外框改用中心線描邊', en: 'Keep color fills, and stroke with centerlines instead of region borders' },
   lineSourceOutline: { zh: '色塊外框', en: 'Color' },
   lineSourceOutlineDesc: { zh: '依顏色分群，自動沿不同色塊的邊界產生外框', en: 'Cluster colors and trace the boundaries between regions' },
-  
+
   selected: { zh: '已選', en: 'Selected' },
   currentMode: { zh: '當前模式', en: 'Current Mode' },
   clickToChange: { zh: '點擊更改', en: 'Click to change' },

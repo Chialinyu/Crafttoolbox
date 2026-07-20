@@ -66,8 +66,11 @@ export const PreprocessPanel: React.FC<PreprocessPanelProps> = ({
   const { t } = useLanguage();
 
   // Determine which parameters to show based on mode
+  const showLineSource = mode === 'line' || mode === 'mixed';
+  // Threshold is for binary line preprocess; mixed always uses color clustering for fills.
   const showThreshold = mode === 'line' && lineStyle !== 'color-outline';
-  const showColorCount = mode === 'fill' || mode === 'mixed' || (mode === 'line' && lineStyle === 'color-outline');
+  const showColorCount =
+    mode === 'fill' || mode === 'mixed' || (mode === 'line' && lineStyle === 'color-outline');
 
   // State to hold extracted colors and selection
   const [extractedColors, setExtractedColors] = useState<Array<{
@@ -88,7 +91,7 @@ export const PreprocessPanel: React.FC<PreprocessPanelProps> = ({
 
   return (
     <div className="space-y-6">
-      {mode === 'line' && (
+      {showLineSource && (
         <fieldset className="space-y-2">
           <legend className="text-sm font-medium">{t('lineSource')}</legend>
           <div className="grid grid-cols-3 gap-2">
@@ -123,10 +126,14 @@ export const PreprocessPanel: React.FC<PreprocessPanelProps> = ({
           <p className="text-xs text-muted-foreground">
             {t(
               lineStyle === 'skeleton'
-                ? 'lineSourceSkeletonDesc'
+                ? mode === 'mixed'
+                  ? 'lineSourceSkeletonMixedDesc'
+                  : 'lineSourceSkeletonDesc'
                 : lineStyle === 'color-outline'
                   ? 'lineSourceOutlineDesc'
-                  : 'lineSourceContourDesc'
+                  : mode === 'mixed'
+                    ? 'lineSourceContourMixedDesc'
+                    : 'lineSourceContourDesc'
             )}
           </p>
         </fieldset>

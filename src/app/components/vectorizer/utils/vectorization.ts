@@ -590,6 +590,172 @@ function splitSvgPathSubpaths(pathData: string): string[] {
 }
 
 /**
+ * Collapse only obvious pixel staircases made of short L/H/V segments.
+ * Leaves all cubic (C) curves untouched so text/detail Potrace output stays intact.
+ */
+function collapsePixelStairLines(pathData: string): string {
+  const tokens = pathData.match(/[MmLlHhVvCcSsQqTtAaZz][^MmLlHhVvCcSsQqTtAaZz]*/g);
+  if (!tokens || tokens.length === 0) return pathData;
+
+  const fmt = (n: number) => {
+    const r = Math.round(n * 100) / 100;
+    return Number.isInteger(r) ? String(r) : r.toFixed(2);
+  };
+
+  let x = 0;
+  let y = 0;
+  let out = '';
+  let i = 0;
+
+  const readNums = (raw: string): number[] =>
+    (raw.slice(1).match(/-?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?/g) || []).map(Number);
+
+  while (i < tokens.length) {
+    const tok = tokens[i];
+    const type = tok[0];
+    const cmd = type.toUpperCase();
+
+    // Gather a consecutive L/H/V run and flatten stair corners inside it only.
+    if (cmd === 'L' || cmd === 'H' || cmd === 'V') {
+      const poly: Array<{ x: number; y: number }> = [{ x, y }];
+      let j = i;
+      while (j < tokens.length) {
+        const t = tokens[j];
+        const c = t[0].toUpperCase();
+        const abs = t[0] === t[0].toUpperCase();
+        if (c !== 'L' && c !== 'H' && c !== 'V') break;
+        const nums = readNums(t);
+        if (c === 'L') {
+          for (let k = 0; k + 1 < nums.length; k += 2) {
+            const nx = abs ? nums[k] : x + nums[k];
+            const ny = abs ? nums[k + 1] : y + nums[k + 1];
+            x = nx;
+            y = ny;
+            poly.push({ x, y });
+          }
+        } else if (c === 'H') {
+          for (const n of nums) {
+            x = abs ? n : x + n;
+            poly.push({ x, y });
+          }
+        } else {
+          for (const n of nums) {
+            y = abs ? n : y + n;
+            poly.push({ x, y });
+          }
+        }
+        j++;
+      }
+
+      const collapsed = flattenShortStairPolyline(poly);
+      for (let k = 1; k < collapsed.length; k++) {
+        out += `L ${fmt(collapsed[k].x)} ${fmt(collapsed[k].y)} `;
+      }
+      if (collapsed.length > 0) {
+        x = collapsed[collapsed.length - 1].x;
+        y = collapsed[collapsed.length - 1].y;
+      }
+      i = j;
+      continue;
+    }
+
+    // Pass through curves and moves unchanged (preserves text Beziers).
+    out += tok;
+    if (!out.endsWith(' ') && i < tokens.length - 1) out += ' ';
+
+    const abs = type === type.toUpperCase();
+    const nums = readNums(tok);
+    if (cmd === 'Z') {
+      // closepath — position returns to subpath start; leave as-is
+    } else if (cmd === 'M' || cmd === 'L' || cmd === 'T') {
+      for (let k = 0; k + 1 < nums.length; k += 2) {
+        x = abs ? nums[k] : x + nums[k];
+        y = abs ? nums[k + 1] : y + nums[k + 1];
+      }
+    } else if (cmd === 'H') {
+      for (const n of nums) x = abs ? n : x + n;
+    } else if (cmd === 'V') {
+      for (const n of nums) y = abs ? n : y + n;
+    } else if (cmd === 'C') {
+      for (let k = 0; k + 5 < nums.length; k += 6) {
+        x = abs ? nums[k + 4] : x + nums[k + 4];
+        y = abs ? nums[k + 5] : y + nums[k + 5];
+      }
+    } else if (cmd === 'S' || cmd === 'Q') {
+      for (let k = 0; k + 3 < nums.length; k += 4) {
+        x = abs ? nums[k + 2] : x + nums[k + 2];
+        y = abs ? nums[k + 3] : y + nums[k + 3];
+      }
+    } else if (cmd === 'A') {
+      for (let k = 0; k + 6 < nums.length; k += 7) {
+        x = abs ? nums[k + 5] : x + nums[k + 5];
+        y = abs ? nums[k + 6] : y + nums[k + 6];
+      }
+    }
+
+    i++;
+  }
+
+  return out.trim();
+}
+
+/** Remove only short Manhattan stair corners from an open polyline. */
+function flattenShortStairPolyline(
+  points: Array<{ x: number; y: number }>
+): Array<{ x: number; y: number }> {
+  if (points.length < 3) return points;
+
+  let pts = points.map((p) => ({ ...p }));
+  for (let pass = 0; pass < 6; pass++) {
+    const next: Array<{ x: number; y: number }> = [pts[0]];
+    let removed = 0;
+    for (let i = 1; i < pts.length - 1; i++) {
+      const prev = pts[i - 1];
+      const curr = pts[i];
+      const nxt = pts[i + 1];
+      if (isShortPixelStair(prev, curr, nxt)) {
+        removed++;
+        continue;
+      }
+      next.push(curr);
+    }
+    next.push(pts[pts.length - 1]);
+    pts = next;
+    if (removed === 0) break;
+  }
+  return pts;
+}
+
+function isShortPixelStair(
+  a: { x: number; y: number },
+  b: { x: number; y: number },
+  c: { x: number; y: number }
+): boolean {
+  const d1 = Math.hypot(b.x - a.x, b.y - a.y);
+  const d2 = Math.hypot(c.x - b.x, c.y - b.y);
+  // Only true 1–2px raster jaggies — never long intentional corners
+  if (d1 > 2.0 || d2 > 2.0 || d1 < 0.15 || d2 < 0.15) return false;
+
+  const v1x = b.x - a.x;
+  const v1y = b.y - a.y;
+  const v2x = c.x - b.x;
+  const v2y = c.y - b.y;
+
+  const ax1 = Math.abs(v1x);
+  const ay1 = Math.abs(v1y);
+  const ax2 = Math.abs(v2x);
+  const ay2 = Math.abs(v2y);
+  const axis1 = ax1 <= 0.4 || ay1 <= 0.4;
+  const axis2 = ax2 <= 0.4 || ay2 <= 0.4;
+  if (!axis1 || !axis2) return false;
+
+  // Need a real turn (stair), not a straight continuation
+  const cross = Math.abs(v1x * v2y - v1y * v2x);
+  const dot = v1x * v2x + v1y * v2y;
+  return cross > 0.2 * d1 * d2 && dot >= -0.05 * d1 * d2;
+}
+
+/**
  * Trace a binary mask using Potrace to generate smooth bezier curves
  * Returns a Promise that resolves to the SVG path string
  */
@@ -688,8 +854,9 @@ function traceWithPotrace(
       // 🔧 FIX: Convert canvas to data URL (Potrace expects image data, not raw canvas)
       const dataURL = canvas.toDataURL('image/png');
       
-      // Potrace options — moderate optTolerance (edge pad already reduces border spikes)
-      const tolerance = Math.max(0.2, ((100 - config.precision) / 100) * 0.9);
+      // Slightly higher optTolerance absorbs diagonal pixel stairs inside Potrace
+      // without a destructive whole-path refit. Keep floor modest to protect text.
+      const tolerance = Math.max(0.26, ((100 - config.precision) / 100) * 1.0);
       const params = {
         threshold: 128,
         turdSize: Math.max(2, Math.min(config.minArea, 50)),
@@ -739,8 +906,9 @@ function traceWithPotrace(
           bbox.x - POTRACE_EDGE_PAD,
           bbox.y - POTRACE_EDGE_PAD
         );
-        
-        resolve(translatedPath);
+
+        // Only flatten short L/H/V pixel stairs — never rewrite cubic text curves
+        resolve(collapsePixelStairLines(translatedPath));
       });
     } catch (error) {
       console.warn('❌ Potrace error:', error);
@@ -1129,6 +1297,223 @@ function filterInsignificantPaths(
 // ============================================================================
 
 /**
+ * Ink mask for mixed contour/centerline strokes: all non-background clusters.
+ * Background = largest cluster by pixel count.
+ */
+function buildContentInkMaskFromLabels(
+  labels: Uint8Array,
+  clusterCount: number,
+  width: number,
+  height: number
+): Uint8Array {
+  const counts = new Array(clusterCount).fill(0);
+  for (let i = 0; i < labels.length; i++) {
+    const id = labels[i];
+    if (id >= 0 && id < clusterCount) counts[id]++;
+  }
+  let bg = 0;
+  for (let i = 1; i < clusterCount; i++) {
+    if (counts[i] > counts[bg]) bg = i;
+  }
+  const mask = new Uint8Array(width * height);
+  for (let i = 0; i < labels.length && i < mask.length; i++) {
+    const id = labels[i];
+    // 255 = transparent/background sentinel used by clustering
+    if (id === 255) continue;
+    if (id !== bg && id >= 0 && id < clusterCount) mask[i] = 255;
+  }
+  return mask;
+}
+
+/** Potrace / contour strokes from a binary ink mask (255 = ink). */
+async function buildOutlineStrokesFromBinary(
+  binary: Uint8Array,
+  width: number,
+  height: number,
+  config: VectorizationConfig
+): Promise<VectorPath[]> {
+  const paths: VectorPath[] = [];
+  let svgPath: string | null = null;
+  try {
+    const POTRACE_TIMEOUT_MS = 15000;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    const potracePromise = traceWithPotrace(binary, width, height, config);
+    const timeoutPromise = new Promise<string | null>((resolve) => {
+      timeoutId = setTimeout(() => resolve(null), POTRACE_TIMEOUT_MS);
+    });
+    svgPath = await Promise.race([potracePromise, timeoutPromise]);
+    if (timeoutId !== null) clearTimeout(timeoutId);
+  } catch {
+    svgPath = null;
+  }
+
+  if (svgPath) {
+    for (const subpath of splitSvgPathSubpaths(svgPath)) {
+      paths.push({
+        points: [],
+        closed: true,
+        type: 'stroke',
+        color: '#000000',
+        svgPath: subpath,
+        strokeWidth: 2,
+      });
+    }
+    return paths;
+  }
+
+  const contours = findBoundaryContours(
+    binary,
+    width,
+    height,
+    400,
+    config.isCancelledRef,
+    true
+  );
+  for (const contour of contours) {
+    if (config.isCancelledRef?.current) break;
+    if (contour.length < 3) continue;
+    if (calculateArea(contour) < config.minArea) continue;
+    try {
+      const fitted = contourToSmoothBezierPath(contour, true, config.precision);
+      paths.push({
+        points: fitted.points,
+        closed: true,
+        type: 'stroke',
+        color: '#000000',
+        svgPath: fitted.svgPath,
+        strokeWidth: 2,
+      });
+    } catch {
+      paths.push({
+        points: contour,
+        closed: true,
+        type: 'stroke',
+        color: '#000000',
+        svgPath: pointsToSVGPath(contour, true),
+        strokeWidth: 2,
+      });
+    }
+  }
+  return paths;
+}
+
+/** Zhang-Suen centerline strokes from a binary ink mask (255 = ink). */
+async function buildSkeletonStrokesFromBinary(
+  binaryIn: Uint8Array,
+  width: number,
+  height: number,
+  config: VectorizationConfig
+): Promise<VectorPath[]> {
+  const paths: VectorPath[] = [];
+  const binary = new Uint8Array(binaryIn);
+
+  const closedShapes = detectClosedShapes(binary, width, height);
+  const binaryForSkeleton = new Uint8Array(binary);
+  for (const shape of closedShapes) {
+    for (const pixel of shape.pixels) {
+      binaryForSkeleton[pixel.y * width + pixel.x] = 0;
+    }
+  }
+
+  const distanceMap = computeDistanceTransform(binaryForSkeleton, width, height);
+  const skeletonRaw = zhangSuenThinning(binaryForSkeleton, width, height);
+  const graph = buildSkeletonGraph(skeletonRaw, width, height, distanceMap);
+  const skeleton = graphToSkeleton(graph, width, height);
+  const skeletonPaths = traceSkeletonPaths(skeleton, width, height, config.detailLevel ?? 50);
+
+  for (const shape of closedShapes) {
+    if (shape.pixels.length < 5) continue;
+    const ellipse = fitEllipse(shape.pixels);
+    let svgPath: string | undefined;
+    let points = shape.contour;
+    if (ellipse && ellipse.a > 2 && ellipse.b > 2) {
+      svgPath = ellipseToSVGPath(ellipse);
+      const cos = Math.cos(ellipse.angle);
+      const sin = Math.sin(ellipse.angle);
+      points = [
+        { x: ellipse.cx + ellipse.a * cos, y: ellipse.cy + ellipse.a * sin },
+        { x: ellipse.cx - ellipse.b * sin, y: ellipse.cy + ellipse.b * cos },
+        { x: ellipse.cx - ellipse.a * cos, y: ellipse.cy - ellipse.a * sin },
+        { x: ellipse.cx + ellipse.b * sin, y: ellipse.cy - ellipse.b * cos },
+      ];
+      const avgRadius = (ellipse.a + ellipse.b) / 2;
+      paths.push({
+        points,
+        closed: true,
+        type: 'stroke',
+        color: '#000000',
+        svgPath,
+        strokeWidth: Math.max(2, Math.round(avgRadius * 0.15)),
+      });
+    } else {
+      try {
+        const fitted = contourToSmoothBezierPath(points, true, config.precision);
+        points = fitted.points;
+        svgPath = fitted.svgPath;
+      } catch {
+        svgPath = pointsToSVGPath(points, true);
+      }
+      paths.push({
+        points,
+        closed: true,
+        type: 'stroke',
+        color: '#000000',
+        svgPath,
+        strokeWidth: Math.max(2, Math.round(Math.sqrt(shape.area / Math.PI) * 0.15)),
+      });
+    }
+  }
+
+  const minCenterlinePoints =
+    (config.detailLevel ?? 50) >= 80 ? 1 : (config.detailLevel ?? 50) >= 50 ? 2 : 3;
+
+  for (const skPath of skeletonPaths) {
+    if (skPath.points.length < minCenterlinePoints) continue;
+    const widths: number[] = [];
+    for (const pt of skPath.points) {
+      const idx = Math.round(pt.y) * width + Math.round(pt.x);
+      if (idx >= 0 && idx < distanceMap.length) widths.push(distanceMap[idx] * 2);
+      else widths.push(3);
+    }
+    const smoothedWidths = smoothWidthArray(widths, 5);
+    const avgWidth =
+      smoothedWidths.reduce((sum, w) => sum + w, 0) / Math.max(1, smoothedWidths.length);
+
+    let points = skPath.points;
+    let svgPath: string | undefined;
+    if (points.length >= 3) {
+      try {
+        const fitted = contourToSmoothBezierPath(points, false, config.precision);
+        points = fitted.points;
+        svgPath = fitted.svgPath;
+      } catch {
+        svgPath = pointsToSVGPath(points, false);
+      }
+    } else {
+      svgPath = pointsToSVGPath(points, false);
+    }
+
+    paths.push({
+      points,
+      closed: false,
+      type: 'stroke',
+      color: '#000000',
+      svgPath,
+      strokeWidth: Math.max(4, Math.round(avgWidth)),
+    });
+  }
+
+  try {
+    const { filterInsignificantPaths, dedupeOverlappingStrokePaths } = await import('./pathFilter');
+    return dedupeOverlappingStrokePaths(
+      filterInsignificantPaths(paths, width, height, config.detailLevel ?? 50)
+    );
+  } catch {
+    return paths;
+  }
+}
+
+/**
  * Main vectorization function
  * 🆕 Now returns Promise<VectorPath[]> to support async Potrace integration
  */
@@ -1141,6 +1526,12 @@ export async function vectorizeImage(
   const data = imageData.data;
   const width = imageData.width;
   const height = imageData.height;
+
+  /** Mixed/stroke: region-border strokes only for color-outline (or stroke color-outline path). */
+  const collectRegionBoundaryStrokes =
+    config.mode === 'stroke' ||
+    (config.mode === 'mixed' &&
+      (config.lineStyle === 'color-outline' || config.lineStyle === undefined));
   
   // Calculate tolerance for path simplification
   // Keep a usable floor — sub-pixel epsilon leaves pixel staircases.
@@ -1490,7 +1881,7 @@ export async function vectorizeImage(
                 paths.push(regionPath);
               }
               // Mixed outlines: skip outer canvas frame (causes "extra bounding box").
-              if (config.mode !== 'fill' && !isCanvasFrame) {
+              if (collectRegionBoundaryStrokes && config.mode !== 'fill' && !isCanvasFrame) {
                 outlinePaths.push({
                   ...regionPath,
                   type: 'stroke',
@@ -1559,7 +1950,7 @@ export async function vectorizeImage(
                   if (config.mode !== 'stroke') {
                     paths.push(regionPath);
                   }
-                  if (config.mode !== 'fill' && !isCanvasFrame) {
+                  if (collectRegionBoundaryStrokes && config.mode !== 'fill' && !isCanvasFrame) {
                     outlinePaths.push({
                       ...regionPath,
                       type: 'stroke',
@@ -1665,7 +2056,7 @@ export async function vectorizeImage(
                 if (config.mode !== 'stroke') {
                   paths.push(regionPath);
                 }
-                if (config.mode !== 'fill' && !isCanvasFrame) {
+                if (collectRegionBoundaryStrokes && config.mode !== 'fill' && !isCanvasFrame) {
                   outlinePaths.push({
                     ...regionPath,
                     type: 'stroke',
@@ -1681,12 +2072,43 @@ export async function vectorizeImage(
           await yieldWhenIdle(16);
         }
       }
-      // Render outlines after all fills so later regions cannot cover them.
-      paths.push(...outlinePaths);
+      // Stroke layer for mixed: region borders, contour, or centerline
+      if (config.mode === 'mixed' && config.lineStyle === 'skeleton') {
+        const inkMask = buildContentInkMaskFromLabels(
+          config.labels,
+          config.clusterCount,
+          width,
+          height
+        );
+        const skeletonStrokes = await buildSkeletonStrokesFromBinary(
+          inkMask,
+          width,
+          height,
+          config
+        );
+        paths.push(...skeletonStrokes);
+      } else if (config.mode === 'mixed' && config.lineStyle === 'outline') {
+        const inkMask = buildContentInkMaskFromLabels(
+          config.labels,
+          config.clusterCount,
+          width,
+          height
+        );
+        const contourStrokes = await buildOutlineStrokesFromBinary(
+          inkMask,
+          width,
+          height,
+          config
+        );
+        paths.push(...contourStrokes);
+      } else {
+        // Render region-border outlines after all fills
+        paths.push(...outlinePaths);
+      }
 
       // Shared edges between adjacent regions produce duplicate stroke tracks
       // (often one smooth Bezier + one denser polyline). Keep the smoother one.
-      if (outlinePaths.length > 0) {
+      if (outlinePaths.length > 0 || config.mode === 'mixed') {
         const { dedupeOverlappingStrokePaths } = await import('./pathFilter');
         const deduped = dedupeOverlappingStrokePaths(paths);
         paths.length = 0;

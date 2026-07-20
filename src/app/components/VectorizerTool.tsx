@@ -990,7 +990,15 @@ export const VectorizerTool: React.FC<VectorizerToolProps> = ({ onBack }) => {
             </CardHeader>
             {isStepCurrent(2) && (
               <CardContent className="space-y-3">
-                <ModeSelector selectedMode={tempMode} onModeChange={setTempMode} />
+                <ModeSelector
+                  selectedMode={tempMode}
+                  onModeChange={(nextMode) => {
+                    setTempMode(nextMode);
+                    // Mixed defaults to color-region borders; line defaults to contour.
+                    if (nextMode === 'mixed') setLineStyle('color-outline');
+                    else if (nextMode === 'line') setLineStyle('outline');
+                  }}
+                />
                 <div className="flex gap-2">
                   {editingStep === 2 && (
                     <Button variant="outline" onClick={handleCancelEdit} className="flex-1">
