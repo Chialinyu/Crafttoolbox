@@ -13,6 +13,7 @@ import { commonTranslations } from './common';
 import { homeTranslations } from './home';
 import { mosaicTranslations } from './mosaic';
 import { vectorizerTranslations } from './vectorizer';
+import { stitchprintTranslations } from './stitchprint';
 
 export const translations: {
   [key: string]: {
@@ -24,6 +25,7 @@ export const translations: {
   ...homeTranslations,
   ...mosaicTranslations,
   ...vectorizerTranslations,
+  ...stitchprintTranslations,
 };
 
 export type TranslationKey = keyof typeof translations;

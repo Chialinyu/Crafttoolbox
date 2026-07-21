@@ -35,7 +35,14 @@ const tools: Tool[] = [
     imageUrl: vectorizerCoverImage,
     gradient: 'from-accent/20 to-secondary/20',
   },
-  // Add more tools here in the future
+  {
+    id: 'stitchprint-tool',
+    nameKey: 'stitchprintTool',
+    descKey: 'stitchprintToolDesc',
+    category: 'textile',
+    icon: '▦',
+    gradient: 'from-secondary/25 to-primary/20',
+  },
 ];
 
 interface HomePageProps {
@@ -50,6 +57,7 @@ export const HomePage: React.FC<HomePageProps> = ({ onSelectTool }) => {
   const categories = [
     { key: 'all', labelKey: 'allCategories' },
     { key: 'collageArt', labelKey: 'collageArt' },
+    { key: 'textile', labelKey: 'textile' },
   ].filter((category) => {
     if (category.key === 'all') return true;
     return tools.some((tool) => tool.category === category.key);
