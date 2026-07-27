@@ -16,13 +16,25 @@ function fmt(n: number): string {
   return (Math.round(n * 1000) / 1000).toFixed(3);
 }
 
+function subpathD(points: Polyline['points']): string {
+  if (points.length === 0) return '';
+  let d = `M ${fmt(points[0].x)} ${fmt(points[0].y)}`;
+  for (let i = 1; i < points.length; i++) {
+    d += ` L ${fmt(points[i].x)} ${fmt(points[i].y)}`;
+  }
+  return d + ' Z';
+}
+
 function polyToSvg(result: PatternResult, poly: Polyline): string {
-  const d = pointsToPathD(poly);
-  if (!d) return '';
   const color = layerColor(result, poly.layer, poly);
   if (poly.fill) {
-    return `<path d="${d}" fill="${color}" stroke="none" data-layer="${poly.layer}"/>`;
+    let d = subpathD(poly.points);
+    for (const hole of poly.holes ?? []) d += ' ' + subpathD(hole);
+    if (!d) return '';
+    return `<path d="${d}" fill="${color}" fill-rule="evenodd" stroke="none" data-layer="${poly.layer}"/>`;
   }
+  const d = pointsToPathD(poly);
+  if (!d) return '';
   const sw = layerStrokeWidth(result, poly.layer);
   return `<path d="${d}" stroke="${color}" stroke-width="${fmt(sw)}" stroke-linecap="round" stroke-linejoin="round" data-layer="${poly.layer}"/>`;
 }

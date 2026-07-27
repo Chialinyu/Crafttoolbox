@@ -19,14 +19,26 @@ export interface ShapeOptions {
   polygonSides?: number;
   /** Star point count (shape === 'star'), 4–12. */
   starPoints?: number;
-  /** Heart plumpness (shape === 'heart'), ~0.6 (slim) … 1.4 (full). */
+  /** Star inner radius as a percentage of its outer radius, 15–80. */
+  starInnerRadiusPercent?: number;
+  /** Corner rounding in millimeters for supported geometric silhouettes. */
+  cornerRadiusMm?: number;
+  /** Heart lobe fullness, ~0.6 (slim) … 1.4 (full). */
   heartFullness?: number;
+  /** Heart center-notch depth, ~0.5 (shallow) … 1.5 (deep). */
+  heartNotchDepth?: number;
+  /** Heart bottom-tip roundness, 0 (pointed) … 1 (round). */
+  heartTipRoundness?: number;
 }
 
 export const DEFAULT_SHAPE_OPTIONS: Required<ShapeOptions> = {
   polygonSides: 6,
   starPoints: 5,
+  starInnerRadiusPercent: 42,
+  cornerRadiusMm: 0,
   heartFullness: 1,
+  heartNotchDepth: 1,
+  heartTipRoundness: 0.25,
 };
 
 export interface ShapeBounds {
@@ -71,7 +83,10 @@ export function canvasShapeOutline(
         { x, y: y + height },
       ];
     case 'rounded-rect':
-      return roundedRectOutline(bounds, Math.min(width, height) * 0.18);
+      return roundedRectOutline(
+        bounds,
+        options.cornerRadiusMm ?? Math.min(width, height) * 0.18
+      );
     case 'capsule':
       return roundedRectOutline(bounds, Math.min(width, height) / 2);
     case 'circle': {
@@ -81,41 +96,54 @@ export function canvasShapeOutline(
     case 'ellipse':
       return sampleEllipse(cx, cy, rx, ry, 72);
     case 'hexagon':
-      return [
+      return roundPolygonCorners([
         { x: x + width * 0.25, y },
         { x: x + width * 0.75, y },
         { x: x + width, y: cy },
         { x: x + width * 0.75, y: y + height },
         { x: x + width * 0.25, y: y + height },
         { x, y: cy },
-      ];
+      ], options.cornerRadiusMm ?? DEFAULT_SHAPE_OPTIONS.cornerRadiusMm);
     case 'diamond':
-      return [
+      return roundPolygonCorners([
         { x: cx, y },
         { x: x + width, y: cy },
         { x: cx, y: y + height },
         { x, y: cy },
-      ];
-    case 'polygon':
-      return regularPolygonOutline(
+      ], options.cornerRadiusMm ?? DEFAULT_SHAPE_OPTIONS.cornerRadiusMm);
+    case 'polygon': {
+      const vertices = regularPolygonOutline(
         cx,
         cy,
         rx,
         ry,
         clampInt(options.polygonSides ?? DEFAULT_SHAPE_OPTIONS.polygonSides, 3, 12)
       );
-    case 'star':
-      return starOutline(
+      return roundPolygonCorners(
+        vertices,
+        options.cornerRadiusMm ?? DEFAULT_SHAPE_OPTIONS.cornerRadiusMm
+      );
+    }
+    case 'star': {
+      const vertices = starOutline(
         cx,
         cy,
         rx,
         ry,
-        clampInt(options.starPoints ?? DEFAULT_SHAPE_OPTIONS.starPoints, 4, 12)
+        clampInt(options.starPoints ?? DEFAULT_SHAPE_OPTIONS.starPoints, 4, 12),
+        options.starInnerRadiusPercent ?? DEFAULT_SHAPE_OPTIONS.starInnerRadiusPercent
       );
+      return roundPolygonCorners(
+        vertices,
+        options.cornerRadiusMm ?? DEFAULT_SHAPE_OPTIONS.cornerRadiusMm
+      );
+    }
     case 'heart':
       return heartOutline(
         bounds,
-        options.heartFullness ?? DEFAULT_SHAPE_OPTIONS.heartFullness
+        options.heartFullness ?? DEFAULT_SHAPE_OPTIONS.heartFullness,
+        options.heartNotchDepth ?? DEFAULT_SHAPE_OPTIONS.heartNotchDepth,
+        options.heartTipRoundness ?? DEFAULT_SHAPE_OPTIONS.heartTipRoundness
       );
     default:
       return [
@@ -168,11 +196,12 @@ function starOutline(
   cy: number,
   rx: number,
   ry: number,
-  points: number
+  points: number,
+  innerRadiusPercent: number
 ): Point2[] {
   const pts: Point2[] = [];
   const start = -Math.PI / 2;
-  const inner = 0.42; // inner/outer radius ratio
+  const inner = Math.max(0.15, Math.min(0.8, innerRadiusPercent / 100));
   const steps = points * 2;
   for (let i = 0; i < steps; i++) {
     const a = start + (i / steps) * Math.PI * 2;
@@ -183,23 +212,36 @@ function starOutline(
 }
 
 /**
- * Plump, adjustable heart. `fullness` widens the lobes and softens the
- * bottom; the raw curve is normalized to fill the bounding box.
+ * Adjustable heart. Fullness changes the side curvature (not just scale),
+ * notch depth moves the center cleft, and tip roundness blends the pointed
+ * sin³ profile toward a smooth sin profile near the bottom.
  */
-function heartOutline(bounds: ShapeBounds, fullness: number): Point2[] {
+function heartOutline(
+  bounds: ShapeBounds,
+  fullness: number,
+  notchDepth: number,
+  tipRoundness: number
+): Point2[] {
   const f = Math.max(0.6, Math.min(1.4, fullness));
-  const wide = 0.72 + 0.5 * f; // horizontal plumpness
+  const notch = Math.max(0.5, Math.min(1.5, notchDepth));
+  const tip = Math.max(0, Math.min(1, tipRoundness));
+  const sideExponent = 3 / f;
   const n = 96;
   const raw: Point2[] = [];
   for (let i = 0; i < n; i++) {
     const t = (i / n) * Math.PI * 2;
-    const hx = Math.sin(t) ** 3 * 16 * wide;
+    const sin = Math.sin(t);
+    const plumpProfile = Math.sign(sin) * Math.abs(sin) ** sideExponent;
+    const tipProfile = sin;
+    const hx = 16 * ((1 - tip * 0.35) * plumpProfile + tip * 0.35 * tipProfile);
     const hy =
       13 * Math.cos(t) -
       5 * Math.cos(2 * t) -
       2 * Math.cos(3 * t) -
       Math.cos(4 * t);
-    raw.push({ x: hx, y: -hy }); // y down
+    // t≈0 is the top-center notch. Positive y moves it deeper into the heart.
+    const notchOffset = (notch - 1) * 5 * Math.max(0, Math.cos(t)) ** 8;
+    raw.push({ x: hx, y: -hy + notchOffset }); // y down
   }
   let minX = Infinity;
   let maxX = -Infinity;
@@ -218,6 +260,47 @@ function heartOutline(bounds: ShapeBounds, fullness: number): Point2[] {
     x: x + ((p.x - minX) / spanX) * width,
     y: y + ((p.y - minY) / spanY) * height,
   }));
+}
+
+/**
+ * Figma-like corner rounding for closed polygon vertices. `radius` is a
+ * physical cutback in millimeters, clamped per edge to avoid self-overlap.
+ * Sampling quadratic corners keeps SVG, hit-testing and G-code on one outline.
+ */
+function roundPolygonCorners(vertices: Point2[], radius: number): Point2[] {
+  const r = Math.max(0, radius);
+  if (r <= 1e-6 || vertices.length < 3) return vertices;
+  const rounded: Point2[] = [];
+  const segments = 5;
+  for (let i = 0; i < vertices.length; i++) {
+    const prev = vertices[(i - 1 + vertices.length) % vertices.length];
+    const current = vertices[i];
+    const next = vertices[(i + 1) % vertices.length];
+    const prevLength = Math.hypot(prev.x - current.x, prev.y - current.y);
+    const nextLength = Math.hypot(next.x - current.x, next.y - current.y);
+    const cut = Math.min(r, prevLength * 0.45, nextLength * 0.45);
+    if (cut <= 1e-6) {
+      rounded.push(current);
+      continue;
+    }
+    const incoming = {
+      x: current.x + ((prev.x - current.x) / prevLength) * cut,
+      y: current.y + ((prev.y - current.y) / prevLength) * cut,
+    };
+    const outgoing = {
+      x: current.x + ((next.x - current.x) / nextLength) * cut,
+      y: current.y + ((next.y - current.y) / nextLength) * cut,
+    };
+    for (let step = 0; step <= segments; step++) {
+      const t = step / segments;
+      const u = 1 - t;
+      rounded.push({
+        x: u * u * incoming.x + 2 * u * t * current.x + t * t * outgoing.x,
+        y: u * u * incoming.y + 2 * u * t * current.y + t * t * outgoing.y,
+      });
+    }
+  }
+  return rounded;
 }
 
 function sampleEllipse(

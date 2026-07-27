@@ -95,6 +95,14 @@ export function patternToGcode(
   const emitGridAt = (grid: Polyline[], z: number) => {
     const clip = result.clipToShape && result.outline.length >= 3;
     for (const poly of grid) {
+      // Filled holey board (real plastic-canvas lattice): raster-fill the
+      // material, subtracting the holes so only the bars are extruded.
+      if (poly.fill) {
+        for (const fillLine of serpentineFill(poly, 0.45, poly.holes)) {
+          emitPoly(fillLine, z);
+        }
+        continue;
+      }
       if (!clip || poly.points.length !== 2) {
         emitPoly(poly, z);
         continue;
@@ -202,9 +210,15 @@ export function patternToGcode(
 }
 
 /**
- * Serpentine raster fill clipped to a closed polygon (any silhouette).
+ * Serpentine raster fill clipped to a closed polygon (any silhouette),
+ * optionally subtracting hole polygons so only the material between holes is
+ * extruded (real plastic-canvas bars).
  */
-function serpentineFill(board: Polyline, spacing: number): Polyline[] {
+function serpentineFill(
+  board: Polyline,
+  spacing: number,
+  holes?: Point2[][]
+): Polyline[] {
   const xs = board.points.map((p) => p.x);
   const ys = board.points.map((p) => p.y);
   const x0 = Math.min(...xs);
@@ -214,13 +228,25 @@ function serpentineFill(board: Polyline, spacing: number): Polyline[] {
   const height = y1 - y0;
   if (height <= 0 || x1 <= x0) return [];
 
+  const holeBounds = (holes ?? []).map((hole) => ({
+    hole,
+    minY: Math.min(...hole.map((p) => p.y)),
+    maxY: Math.max(...hole.map((p) => p.y)),
+  }));
+
   const step = Math.max(0.3, spacing);
-  const rows = Math.min(4000, Math.floor(height / step));
+  const rows = Math.min(6000, Math.floor(height / step));
   const out: Polyline[] = [];
   let flip = false;
   for (let i = 0; i <= rows; i++) {
     const y = y0 + i * step;
-    const intervals = clipHorizontalToPolygon(board.points, y, x0, x1);
+    let intervals = clipHorizontalToPolygon(board.points, y, x0, x1);
+    for (const hb of holeBounds) {
+      if (y < hb.minY || y > hb.maxY) continue;
+      for (const cut of clipHorizontalToPolygon(hb.hole, y, x0, x1)) {
+        intervals = subtractInterval(intervals, cut);
+      }
+    }
     const ordered = flip ? [...intervals].reverse() : intervals;
     for (const [left, right] of ordered) {
       out.push({
@@ -240,6 +266,23 @@ function serpentineFill(board: Polyline, spacing: number): Polyline[] {
     if (intervals.length > 0) flip = !flip;
   }
   return out;
+}
+
+/** Remove [cutL,cutR] from a set of sorted, non-overlapping intervals. */
+function subtractInterval(
+  intervals: Array<[number, number]>,
+  [cutL, cutR]: [number, number]
+): Array<[number, number]> {
+  const result: Array<[number, number]> = [];
+  for (const [l, r] of intervals) {
+    if (cutR <= l || cutL >= r) {
+      result.push([l, r]);
+      continue;
+    }
+    if (cutL > l) result.push([l, Math.min(cutL, r)]);
+    if (cutR < r) result.push([Math.max(cutR, l), r]);
+  }
+  return result.filter(([l, r]) => r - l > 0.05);
 }
 
 function hypot(a: Point2, b: Point2): number {

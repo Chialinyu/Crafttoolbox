@@ -34,8 +34,13 @@ export interface Polyline {
   closed?: boolean;
   /** Per-stitch palette color; grid/border use result-level colors. */
   color?: string;
-  /** Render as a filled shape (solid backboard) rather than a stroke. */
+  /** Render as a filled shape (solid backboard / holey board) rather than a stroke. */
   fill?: boolean;
+  /**
+   * Inner subpaths punched out of a filled shape (even-odd), e.g. the holes of
+   * a plastic-canvas board. Only meaningful when `fill` is true.
+   */
+  holes?: Point2[][];
 }
 
 /** rows × cols; true = place an X in that cell */
@@ -55,6 +60,8 @@ export interface CrossStitchParams {
   cellSize: number;
   strokeWidth: number;
   gridWeight: number;
+  /** Minimum material rim between any printed hole and the outer silhouette. */
+  edgeMarginMm: number;
   /**
    * 20–100: how far each X fills its cell (inset).
    * Does NOT control which cells get stitches — that's occupancy.

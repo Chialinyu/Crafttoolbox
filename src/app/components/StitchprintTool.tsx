@@ -58,6 +58,8 @@ import {
 } from './stitchprint';
 
 type Step = 1 | 2 | 3 | 4 | 5;
+type ShapeChoice = CanvasShape | Exclude<SizeTemplate, 'custom'>;
+type CornerShape = 'rounded-rect' | 'hexagon' | 'diamond' | 'polygon' | 'star';
 
 interface StitchprintToolProps {
   onBack: () => void;
@@ -83,7 +85,7 @@ export const StitchprintTool: React.FC<StitchprintToolProps> = ({ onBack }) => {
 
   const [widthMm, setWidthMm] = useState(SIZE_TEMPLATES.bookmark.widthMm);
   const [heightMm, setHeightMm] = useState(SIZE_TEMPLATES.bookmark.heightMm);
-  const [sizeTemplate, setSizeTemplate] = useState<SizeTemplate>('bookmark');
+  const [shapeChoice, setShapeChoice] = useState<ShapeChoice>('bookmark');
   const [lockAspect, setLockAspect] = useState(true);
   const aspectRatioRef = useRef(
     SIZE_TEMPLATES.bookmark.widthMm / SIZE_TEMPLATES.bookmark.heightMm
@@ -108,6 +110,7 @@ export const StitchprintTool: React.FC<StitchprintToolProps> = ({ onBack }) => {
   const [cellSize, setCellSize] = useState(4);
   const [strokeWidth, setStrokeWidth] = useState(0.4);
   const [gridWeight, setGridWeight] = useState(0.3);
+  const [edgeMarginMm, setEdgeMarginMm] = useState(0);
   const [fillPercent, setFillPercent] = useState(70);
   const [showBorder, setShowBorder] = useState(true);
   const [gridColor, setGridColor] = useState(DEFAULT_GRID_COLOR);
@@ -118,10 +121,20 @@ export const StitchprintTool: React.FC<StitchprintToolProps> = ({ onBack }) => {
   const [canvasPreset, setCanvasPreset] = useState<CanvasPresetId>('custom');
   const [canvasStyle, setCanvasStyle] = useState<CanvasStyle>('square');
   const [backboard, setBackboard] = useState<Backboard>('none');
-  const [canvasShape, setCanvasShape] = useState<CanvasShape>('rect');
+  const [canvasShape, setCanvasShape] = useState<CanvasShape>('capsule');
   const [polygonSides, setPolygonSides] = useState(6);
   const [starPoints, setStarPoints] = useState(5);
+  const [starInnerRadiusPercent, setStarInnerRadiusPercent] = useState(42);
+  const [shapeCornerRadii, setShapeCornerRadii] = useState<Record<CornerShape, number>>({
+    'rounded-rect': 8,
+    hexagon: 0,
+    diamond: 0,
+    polygon: 0,
+    star: 0,
+  });
   const [heartFullness, setHeartFullness] = useState(1);
+  const [heartNotchDepth, setHeartNotchDepth] = useState(1);
+  const [heartTipRoundness, setHeartTipRoundness] = useState(0.25);
   // Default thin enough for the bookmark size template; thicker styles are a click away.
   const [boardStyle, setBoardStyle] = useState<BoardStyleId>('bookmark');
   const [boardThicknessMm, setBoardThicknessMm] = useState(
@@ -135,6 +148,10 @@ export const StitchprintTool: React.FC<StitchprintToolProps> = ({ onBack }) => {
   const previewPointerRef = useRef({ x: 0, y: 0 });
   const panMovedRef = useRef(false);
   const sourcePaletteRef = useRef<string[]>([]);
+  const shapeCornerRadiusMm =
+    canvasShape in shapeCornerRadii
+      ? shapeCornerRadii[canvasShape as CornerShape]
+      : 0;
 
   const resetPreviewView = useCallback(() => {
     setPreviewZoom(1);
@@ -266,13 +283,22 @@ export const StitchprintTool: React.FC<StitchprintToolProps> = ({ onBack }) => {
         cellSize,
         strokeWidth,
         gridWeight,
+        edgeMarginMm,
         fillPercent,
         showBorder,
         baseStrategy,
         canvasStyle,
         backboard,
         canvasShape,
-        shapeOptions: { polygonSides, starPoints, heartFullness },
+        shapeOptions: {
+          polygonSides,
+          starPoints,
+          starInnerRadiusPercent,
+          cornerRadiusMm: shapeCornerRadiusMm,
+          heartFullness,
+          heartNotchDepth,
+          heartTipRoundness,
+        },
         colorMap: editableColorMap,
         palette: editablePalette,
         gridColor,
@@ -285,6 +311,7 @@ export const StitchprintTool: React.FC<StitchprintToolProps> = ({ onBack }) => {
       cellSize,
       strokeWidth,
       gridWeight,
+      edgeMarginMm,
       fillPercent,
       showBorder,
       baseStrategy,
@@ -293,7 +320,11 @@ export const StitchprintTool: React.FC<StitchprintToolProps> = ({ onBack }) => {
       canvasShape,
       polygonSides,
       starPoints,
+      starInnerRadiusPercent,
+      shapeCornerRadiusMm,
       heartFullness,
+      heartNotchDepth,
+      heartTipRoundness,
       editableColorMap,
       editablePalette,
       gridColor,
@@ -317,6 +348,7 @@ export const StitchprintTool: React.FC<StitchprintToolProps> = ({ onBack }) => {
   };
 
   const applyCanvasShape = (shape: CanvasShape) => {
+    setShapeChoice(shape);
     setCanvasShape(shape);
     if (shape === 'circle') {
       const side = Math.min(widthMm, heightMm);
@@ -324,8 +356,40 @@ export const StitchprintTool: React.FC<StitchprintToolProps> = ({ onBack }) => {
       setHeightMm(side);
       aspectRatioRef.current = 1;
       setLockAspect(true);
-      setSizeTemplate('custom');
+      return;
     }
+    if (shape === 'capsule') {
+      // A square capsule is geometrically a circle — force an elongated stadium
+      // so the shape stays visually distinct from Circle / Coaster.
+      const ratio = widthMm / Math.max(1, heightMm);
+      if (ratio > 0.75 && ratio < 1.35) {
+        const short = Math.min(widthMm, heightMm);
+        const long = clampSize(Math.max(short * 2.5, short + 20));
+        if (widthMm >= heightMm) {
+          setWidthMm(long);
+          setHeightMm(short);
+          aspectRatioRef.current = long / short;
+        } else {
+          setWidthMm(short);
+          setHeightMm(long);
+          aspectRatioRef.current = short / long;
+        }
+      } else {
+        aspectRatioRef.current = widthMm / Math.max(1, heightMm);
+      }
+      setLockAspect(true);
+    }
+  };
+
+  const applyTemplate = (template: Exclude<SizeTemplate, 'custom'>) => {
+    setShapeChoice(template);
+    const size = SIZE_TEMPLATES[template];
+    setWidthMm(size.widthMm);
+    setHeightMm(size.heightMm);
+    aspectRatioRef.current = size.widthMm / size.heightMm;
+    // Shape roots: bookmark → elongated capsule, coaster → circle.
+    setCanvasShape(template === 'bookmark' ? 'capsule' : 'circle');
+    setLockAspect(true);
   };
 
   const previewMarkup = useMemo(
@@ -348,23 +412,8 @@ export const StitchprintTool: React.FC<StitchprintToolProps> = ({ onBack }) => {
     [currentStep]
   );
 
-  const applyTemplate = (template: SizeTemplate) => {
-    setSizeTemplate(template);
-    const size = SIZE_TEMPLATES[template];
-    setWidthMm(size.widthMm);
-    setHeightMm(size.heightMm);
-    aspectRatioRef.current = size.widthMm / size.heightMm;
-    // Soft suggestion only — board style stays independently editable.
-    if (template === 'bookmark' && boardStyle !== 'custom') {
-      applyBoardStyle('bookmark');
-    } else if (template === 'coaster' && boardStyle !== 'custom') {
-      applyBoardStyle('rigid');
-    }
-  };
-
   const updateWidth = (nextWidth: number) => {
     const width = clampSize(nextWidth);
-    setSizeTemplate('custom');
     if (!lockAspect) {
       setWidthMm(width);
       aspectRatioRef.current = width / Math.max(1, heightMm);
@@ -383,7 +432,6 @@ export const StitchprintTool: React.FC<StitchprintToolProps> = ({ onBack }) => {
 
   const updateHeight = (nextHeight: number) => {
     const height = clampSize(nextHeight);
-    setSizeTemplate('custom');
     if (!lockAspect) {
       setHeightMm(height);
       aspectRatioRef.current = widthMm / Math.max(1, height);
@@ -555,7 +603,7 @@ export const StitchprintTool: React.FC<StitchprintToolProps> = ({ onBack }) => {
       description="stitchprintToolDesc"
       onBack={onBack}
     >
-      <div className="grid grid-cols-1 lg:grid-cols-[320px_1fr] gap-6">
+      <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-[320px_1fr]">
         <div className="space-y-4">
           {/* Step 1: Size */}
           <Card className={isStepCompleted(1) ? 'border-accent/30' : ''}>
@@ -574,11 +622,42 @@ export const StitchprintTool: React.FC<StitchprintToolProps> = ({ onBack }) => {
               <CardContent className="space-y-4">
                 <p className="text-xs text-muted-foreground">{t('spStep1Intro')}</p>
 
-                {/* A · Outline shape (independent) */}
+                {/* A · Size template (product presets only) */}
                 <section className="space-y-3 rounded-lg border border-border/60 p-3">
                   <div className="flex items-baseline gap-2">
                     <span className="flex h-5 w-5 items-center justify-center rounded-full bg-accent/15 text-[11px] font-semibold text-accent">
                       A
+                    </span>
+                    <span className="text-sm font-medium">{t('spSizeTemplate')}</span>
+                  </div>
+                  <p className="text-xs text-muted-foreground">{t('spSizeTemplateHint')}</p>
+                  <div className="grid grid-cols-2 gap-2">
+                    {(
+                      [
+                        ['bookmark', 'spSizeBookmark'],
+                        ['coaster', 'spSizeCoaster'],
+                      ] as const
+                    ).map(([value, labelKey]) => (
+                      <Button
+                        key={value}
+                        type="button"
+                        size="sm"
+                        variant={shapeChoice === value ? 'default' : 'outline'}
+                        aria-pressed={shapeChoice === value}
+                        className="h-auto min-h-8 min-w-0 whitespace-normal px-1.5 py-1.5 text-center text-xs leading-tight"
+                        onClick={() => applyTemplate(value)}
+                      >
+                        {t(labelKey)}
+                      </Button>
+                    ))}
+                  </div>
+                </section>
+
+                {/* B · Outline shape + dimensions */}
+                <section className="space-y-3 rounded-lg border border-border/60 p-3">
+                  <div className="flex items-baseline gap-2">
+                    <span className="flex h-5 w-5 items-center justify-center rounded-full bg-accent/15 text-[11px] font-semibold text-accent">
+                      B
                     </span>
                     <span className="text-sm font-medium">{t('spCanvasShape')}</span>
                   </div>
@@ -604,6 +683,7 @@ export const StitchprintTool: React.FC<StitchprintToolProps> = ({ onBack }) => {
                         size="sm"
                         variant={canvasShape === value ? 'default' : 'outline'}
                         aria-pressed={canvasShape === value}
+                        className="h-auto min-h-8 min-w-0 whitespace-normal px-1.5 py-1.5 text-center text-xs leading-tight"
                         onClick={() => applyCanvasShape(value)}
                       >
                         {t(labelKey)}
@@ -611,120 +691,179 @@ export const StitchprintTool: React.FC<StitchprintToolProps> = ({ onBack }) => {
                     ))}
                   </div>
                   {canvasShape === 'polygon' && (
-                    <ParamSlider
-                      id="sp-polygon-sides"
-                      label={t('spPolygonSides')}
-                      value={polygonSides}
-                      min={3}
-                      max={12}
-                      step={1}
-                      suffix=""
-                      onChange={setPolygonSides}
-                    />
+                    <>
+                      <ParamSlider
+                        id="sp-polygon-sides"
+                        label={t('spPolygonSides')}
+                        value={polygonSides}
+                        min={3}
+                        max={12}
+                        step={1}
+                        suffix=""
+                        onChange={setPolygonSides}
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        {t('spPolygonSidesHint')}
+                      </p>
+                    </>
                   )}
                   {canvasShape === 'star' && (
-                    <ParamSlider
-                      id="sp-star-points"
-                      label={t('spStarPoints')}
-                      value={starPoints}
-                      min={4}
-                      max={12}
-                      step={1}
-                      suffix=""
-                      onChange={setStarPoints}
-                    />
+                    <>
+                      <ParamSlider
+                        id="sp-star-points"
+                        label={t('spStarPoints')}
+                        value={starPoints}
+                        min={4}
+                        max={12}
+                        step={1}
+                        suffix=""
+                        onChange={setStarPoints}
+                      />
+                      <ParamSlider
+                        id="sp-star-inner-radius"
+                        label={t('spStarInnerRadius')}
+                        value={starInnerRadiusPercent}
+                        min={15}
+                        max={80}
+                        step={1}
+                        suffix="%"
+                        onChange={setStarInnerRadiusPercent}
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        {t('spStarInnerRadiusHint')}
+                      </p>
+                    </>
+                  )}
+                  {(
+                    ['rounded-rect', 'hexagon', 'diamond', 'polygon', 'star'] as CanvasShape[]
+                  ).includes(canvasShape) && (
+                    <>
+                      <ParamSlider
+                        id="sp-shape-corner-radius"
+                        label={t('spShapeCornerRadius')}
+                        value={shapeCornerRadiusMm}
+                        min={0}
+                        max={Math.max(1, Math.min(widthMm, heightMm) / 4)}
+                        step={0.1}
+                        suffix="mm"
+                        onChange={(value) =>
+                          setShapeCornerRadii((current) => ({
+                            ...current,
+                            [canvasShape as CornerShape]: value,
+                          }))
+                        }
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        {t('spShapeCornerRadiusHint')}
+                      </p>
+                    </>
                   )}
                   {canvasShape === 'heart' && (
-                    <ParamSlider
-                      id="sp-heart-fullness"
-                      label={t('spHeartFullness')}
-                      value={heartFullness}
-                      min={0.6}
-                      max={1.4}
-                      step={0.05}
-                      suffix="×"
-                      onChange={setHeartFullness}
-                    />
+                    <>
+                      <ParamSlider
+                        id="sp-heart-fullness"
+                        label={t('spHeartFullness')}
+                        value={Math.round(heartFullness * 100)}
+                        min={60}
+                        max={140}
+                        step={1}
+                        suffix="%"
+                        onChange={(value) => setHeartFullness(value / 100)}
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        {t('spHeartFullnessHint')}
+                      </p>
+                      <ParamSlider
+                        id="sp-heart-notch-depth"
+                        label={t('spHeartNotchDepth')}
+                        value={Math.round(heartNotchDepth * 100)}
+                        min={50}
+                        max={150}
+                        step={1}
+                        suffix="%"
+                        onChange={(value) => setHeartNotchDepth(value / 100)}
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        {t('spHeartNotchDepthHint')}
+                      </p>
+                      <ParamSlider
+                        id="sp-heart-tip-roundness"
+                        label={t('spHeartTipRoundness')}
+                        value={Math.round(heartTipRoundness * 100)}
+                        min={0}
+                        max={100}
+                        step={1}
+                        suffix="%"
+                        onChange={(value) => setHeartTipRoundness(value / 100)}
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        {t('spHeartTipRoundnessHint')}
+                      </p>
+                    </>
                   )}
-                </section>
-
-                {/* B · Size (independent) */}
-                <section className="space-y-3 rounded-lg border border-border/60 p-3">
-                  <div className="flex items-baseline gap-2">
-                    <span className="flex h-5 w-5 items-center justify-center rounded-full bg-accent/15 text-[11px] font-semibold text-accent">
-                      B
-                    </span>
-                    <span className="text-sm font-medium">{t('spSizeTemplate')}</span>
-                  </div>
-                  <div className="grid grid-cols-3 gap-2">
-                    {(
-                      [
-                        ['bookmark', 'spSizeBookmark'],
-                        ['coaster', 'spSizeCoaster'],
-                        ['custom', 'spSizeCustom'],
-                      ] as const
-                    ).map(([value, labelKey]) => (
-                      <Button
-                        key={value}
-                        type="button"
-                        size="sm"
-                        variant={sizeTemplate === value ? 'default' : 'outline'}
-                        aria-pressed={sizeTemplate === value}
-                        className="min-w-0 px-2 text-xs"
-                        onClick={() => applyTemplate(value)}
-                      >
-                        {t(labelKey)}
-                      </Button>
-                    ))}
-                  </div>
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="space-y-0.5">
-                      <Label htmlFor="sp-lock-aspect">{t('spLockAspect')}</Label>
-                      <p className="text-xs text-muted-foreground">{t('spLockAspectDesc')}</p>
-                    </div>
-                    <Button
-                      id="sp-lock-aspect"
-                      type="button"
-                      size="sm"
-                      variant={lockAspect ? 'default' : 'outline'}
-                      aria-pressed={lockAspect}
-                      aria-label={t('spLockAspect')}
-                      onClick={() => {
-                        setLockAspect((locked) => {
-                          if (!locked) {
-                            aspectRatioRef.current = widthMm / Math.max(1, heightMm);
-                          }
-                          return !locked;
-                        });
-                      }}
-                    >
-                      {lockAspect ? (
-                        <Link2 className="h-4 w-4" aria-hidden />
-                      ) : (
-                        <Link2Off className="h-4 w-4" aria-hidden />
-                      )}
-                    </Button>
-                  </div>
-                  <ParamSlider
-                    id="sp-width"
-                    label={t('spWidth')}
-                    value={widthMm}
-                    min={SIZE_MIN_MM}
-                    max={SIZE_MAX_MM}
-                    step={1}
-                    suffix="mm"
-                    onChange={updateWidth}
-                  />
-                  <ParamSlider
-                    id="sp-height"
-                    label={t('spHeight')}
-                    value={heightMm}
-                    min={SIZE_MIN_MM}
-                    max={SIZE_MAX_MM}
-                    step={1}
-                    suffix="mm"
-                    onChange={updateHeight}
-                  />
+                  {canvasShape === 'circle' ? (
+                    <ParamSlider
+                      id="sp-diameter"
+                      label={t('spDiameter')}
+                      value={widthMm}
+                      min={SIZE_MIN_MM}
+                      max={SIZE_MAX_MM}
+                      step={1}
+                      suffix="mm"
+                      onChange={updateWidth}
+                    />
+                  ) : (
+                    <>
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="space-y-0.5">
+                          <Label htmlFor="sp-lock-aspect">{t('spLockAspect')}</Label>
+                          <p className="text-xs text-muted-foreground">{t('spLockAspectDesc')}</p>
+                        </div>
+                        <Button
+                          id="sp-lock-aspect"
+                          type="button"
+                          size="sm"
+                          variant={lockAspect ? 'default' : 'outline'}
+                          aria-pressed={lockAspect}
+                          aria-label={t('spLockAspect')}
+                          onClick={() => {
+                            setLockAspect((locked) => {
+                              if (!locked) {
+                                aspectRatioRef.current = widthMm / Math.max(1, heightMm);
+                              }
+                              return !locked;
+                            });
+                          }}
+                        >
+                          {lockAspect ? (
+                            <Link2 className="h-4 w-4" aria-hidden />
+                          ) : (
+                            <Link2Off className="h-4 w-4" aria-hidden />
+                          )}
+                        </Button>
+                      </div>
+                      <ParamSlider
+                        id="sp-width"
+                        label={t('spWidth')}
+                        value={widthMm}
+                        min={SIZE_MIN_MM}
+                        max={SIZE_MAX_MM}
+                        step={1}
+                        suffix="mm"
+                        onChange={updateWidth}
+                      />
+                      <ParamSlider
+                        id="sp-height"
+                        label={t('spHeight')}
+                        value={heightMm}
+                        min={SIZE_MIN_MM}
+                        max={SIZE_MAX_MM}
+                        step={1}
+                        suffix="mm"
+                        onChange={updateHeight}
+                      />
+                    </>
+                  )}
                 </section>
 
                 {/* C · Canvas gauge (independent) */}
@@ -778,6 +917,78 @@ export const StitchprintTool: React.FC<StitchprintToolProps> = ({ onBack }) => {
                       setCanvasPreset('custom');
                     }}
                   />
+                  <ParamSlider
+                    id="sp-grid-weight-early"
+                    label={t('spGridWeight')}
+                    value={gridWeight}
+                    min={0.2}
+                    max={Math.max(0.4, Math.round(cellSize * 0.85 * 10) / 10)}
+                    step={0.05}
+                    suffix="mm"
+                    onChange={(value) => {
+                      setGridWeight(value);
+                      setCanvasPreset('custom');
+                    }}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    {t('spHoleSizeSummary').replace(
+                      '{mm}',
+                      Math.max(0, cellSize - Math.min(gridWeight, cellSize * 0.85)).toFixed(2)
+                    )}
+                  </p>
+                  {canvasShape === 'rect' ? (
+                    <>
+                      <ParamSlider
+                        id="sp-edge-margin"
+                        label={t('spEdgeMargin')}
+                        value={edgeMarginMm}
+                        min={0}
+                        max={Math.max(2, Math.min(20, Math.min(widthMm, heightMm) / 4))}
+                        step={0.1}
+                        suffix="mm"
+                        onChange={setEdgeMarginMm}
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        {t('spEdgeMarginHint')}
+                      </p>
+                    </>
+                  ) : (
+                    <p className="text-xs text-muted-foreground">
+                      {t('spEdgeMarginShapeHint')}
+                    </p>
+                  )}
+                  <fieldset className="space-y-2">
+                    <legend className="text-sm font-medium">{t('spCanvasStyle')}</legend>
+                    <p className="text-xs text-muted-foreground">
+                      {t('spCanvasStyleHint')}
+                    </p>
+                    <div className="grid grid-cols-3 gap-2">
+                      {(
+                        [
+                          ['square', 'spCanvasSquare'],
+                          ['rounded', 'spCanvasRounded'],
+                          ['diagonal', 'spCanvasDiagonal'],
+                        ] as const
+                      ).map(([value, labelKey]) => (
+                        <Button
+                          key={value}
+                          type="button"
+                          size="sm"
+                          variant={canvasStyle === value ? 'default' : 'outline'}
+                          aria-pressed={canvasStyle === value}
+                          className="h-auto min-h-8 min-w-0 whitespace-normal px-1.5 py-1.5 text-center text-xs leading-tight"
+                          onClick={() => setCanvasStyle(value)}
+                        >
+                          {t(labelKey)}
+                        </Button>
+                      ))}
+                    </div>
+                    {baseStrategy !== 'print-grid' && (
+                      <p className="text-xs text-muted-foreground">
+                        {t('spHoleShapePrintGridHint')}
+                      </p>
+                    )}
+                  </fieldset>
                   <p className="text-xs text-muted-foreground">
                     {t('spGridSummary')}: {cols}×{rows}
                   </p>
@@ -807,6 +1018,7 @@ export const StitchprintTool: React.FC<StitchprintToolProps> = ({ onBack }) => {
                         size="sm"
                         variant={boardStyle === value ? 'default' : 'outline'}
                         aria-pressed={boardStyle === value}
+                        className="h-auto min-h-8 min-w-0 whitespace-normal px-1.5 py-1.5 text-center text-xs leading-tight"
                         onClick={() => applyBoardStyle(value)}
                       >
                         {t(labelKey)}
@@ -881,12 +1093,18 @@ export const StitchprintTool: React.FC<StitchprintToolProps> = ({ onBack }) => {
                         type="button"
                         variant="outline"
                         size="sm"
-                        className="flex-1"
+                        className="h-auto min-h-8 min-w-0 flex-1 whitespace-normal px-2 py-1.5 text-xs leading-tight"
                         onClick={() => fileInputRef.current?.click()}
                       >
                         {t('spChangeImage')}
                       </Button>
-                      <Button type="button" variant="ghost" size="sm" onClick={clearImage}>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-auto min-h-8 min-w-0 whitespace-normal px-2 py-1.5 text-xs leading-tight"
+                        onClick={clearImage}
+                      >
                         {t('spClearImage')}
                       </Button>
                     </div>
@@ -917,12 +1135,13 @@ export const StitchprintTool: React.FC<StitchprintToolProps> = ({ onBack }) => {
                 <fieldset className="space-y-2">
                   <legend className="text-sm font-medium">{t('spEmptyMode')}</legend>
                   <p className="text-xs text-muted-foreground">{t('spEmptyModeDesc')}</p>
-                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                  <div className="grid grid-cols-1 gap-2">
                     <Button
                       type="button"
                       size="sm"
                       variant={emptyMode === 'background' ? 'default' : 'outline'}
                       aria-pressed={emptyMode === 'background'}
+                      className="h-auto min-h-8 min-w-0 w-full whitespace-normal px-2 py-1.5 text-center text-xs leading-tight"
                       onClick={() => setEmptyMode('background')}
                     >
                       {t('spEmptyBackground')}
@@ -932,6 +1151,7 @@ export const StitchprintTool: React.FC<StitchprintToolProps> = ({ onBack }) => {
                       size="sm"
                       variant={emptyMode === 'transparent' ? 'default' : 'outline'}
                       aria-pressed={emptyMode === 'transparent'}
+                      className="h-auto min-h-8 min-w-0 w-full whitespace-normal px-2 py-1.5 text-center text-xs leading-tight"
                       onClick={() => setEmptyMode('transparent')}
                     >
                       {t('spEmptyTransparent')}
@@ -941,6 +1161,7 @@ export const StitchprintTool: React.FC<StitchprintToolProps> = ({ onBack }) => {
                       size="sm"
                       variant={emptyMode === 'luminance' ? 'default' : 'outline'}
                       aria-pressed={emptyMode === 'luminance'}
+                      className="h-auto min-h-8 min-w-0 w-full whitespace-normal px-2 py-1.5 text-center text-xs leading-tight"
                       onClick={() => setEmptyMode('luminance')}
                     >
                       {t('spEmptyLuminance')}
@@ -959,7 +1180,7 @@ export const StitchprintTool: React.FC<StitchprintToolProps> = ({ onBack }) => {
                       type="button"
                       size="sm"
                       variant="outline"
-                      className="w-full"
+                      className="h-auto min-h-8 min-w-0 w-full whitespace-normal px-2 py-1.5 text-center text-xs leading-tight"
                       disabled={!sourceImageData}
                       onClick={() => {
                         if (!sourceImageData) return;
@@ -1036,6 +1257,7 @@ export const StitchprintTool: React.FC<StitchprintToolProps> = ({ onBack }) => {
                       size="sm"
                       variant={fitMode === 'contain' ? 'default' : 'outline'}
                       aria-pressed={fitMode === 'contain'}
+                      className="h-auto min-h-8 min-w-0 whitespace-normal px-2 py-1.5 text-center text-xs leading-tight"
                       onClick={() => setFitMode('contain')}
                     >
                       {t('spFitContain')}
@@ -1045,6 +1267,7 @@ export const StitchprintTool: React.FC<StitchprintToolProps> = ({ onBack }) => {
                       size="sm"
                       variant={fitMode === 'cover' ? 'default' : 'outline'}
                       aria-pressed={fitMode === 'cover'}
+                      className="h-auto min-h-8 min-w-0 whitespace-normal px-2 py-1.5 text-center text-xs leading-tight"
                       onClick={() => setFitMode('cover')}
                     >
                       {t('spFitCover')}
@@ -1117,6 +1340,7 @@ export const StitchprintTool: React.FC<StitchprintToolProps> = ({ onBack }) => {
                   suffix="%"
                   onChange={setFillPercent}
                 />
+                <p className="text-xs text-muted-foreground">{t('spFillPercentHint')}</p>
                 <div className="flex items-center justify-between gap-3">
                   <Label htmlFor="sp-border">{t('spShowBorder')}</Label>
                   <Switch
@@ -1350,43 +1574,6 @@ export const StitchprintTool: React.FC<StitchprintToolProps> = ({ onBack }) => {
                   <div className="space-y-4 rounded-lg border border-border/60 p-3">
                     <fieldset className="space-y-2">
                       <legend className="text-sm font-medium">
-                        {t('spCanvasStyle')}
-                      </legend>
-                      <p className="text-xs text-muted-foreground">
-                        {t('spCanvasStyleHint')}
-                      </p>
-                      <div className="grid grid-cols-3 gap-2">
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant={canvasStyle === 'square' ? 'default' : 'outline'}
-                          aria-pressed={canvasStyle === 'square'}
-                          onClick={() => setCanvasStyle('square')}
-                        >
-                          {t('spCanvasSquare')}
-                        </Button>
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant={canvasStyle === 'rounded' ? 'default' : 'outline'}
-                          aria-pressed={canvasStyle === 'rounded'}
-                          onClick={() => setCanvasStyle('rounded')}
-                        >
-                          {t('spCanvasRounded')}
-                        </Button>
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant={canvasStyle === 'diagonal' ? 'default' : 'outline'}
-                          aria-pressed={canvasStyle === 'diagonal'}
-                          onClick={() => setCanvasStyle('diagonal')}
-                        >
-                          {t('spCanvasDiagonal')}
-                        </Button>
-                      </div>
-                    </fieldset>
-                    <fieldset className="space-y-2">
-                      <legend className="text-sm font-medium">
                         {t('spBackboard')}
                       </legend>
                       <p className="text-xs text-muted-foreground">
@@ -1398,6 +1585,7 @@ export const StitchprintTool: React.FC<StitchprintToolProps> = ({ onBack }) => {
                           size="sm"
                           variant={backboard === 'none' ? 'default' : 'outline'}
                           aria-pressed={backboard === 'none'}
+                          className="h-auto min-h-8 min-w-0 whitespace-normal px-1.5 py-1.5 text-center text-xs leading-tight"
                           onClick={() => setBackboard('none')}
                         >
                           {t('spBackboardNone')}
@@ -1407,6 +1595,7 @@ export const StitchprintTool: React.FC<StitchprintToolProps> = ({ onBack }) => {
                           size="sm"
                           variant={backboard === 'solid' ? 'default' : 'outline'}
                           aria-pressed={backboard === 'solid'}
+                          className="h-auto min-h-8 min-w-0 whitespace-normal px-1.5 py-1.5 text-center text-xs leading-tight"
                           onClick={() => setBackboard('solid')}
                         >
                           {t('spBackboardSolid')}
@@ -1469,7 +1658,7 @@ export const StitchprintTool: React.FC<StitchprintToolProps> = ({ onBack }) => {
         </div>
 
         {/* Live preview */}
-        <Card className="min-h-[420px] flex flex-col">
+        <Card className="flex h-[560px] min-h-0 flex-col self-start lg:sticky lg:top-6 lg:h-[calc(100vh-8rem)] lg:max-h-[720px] lg:min-h-[520px]">
           <CardHeader className="flex flex-row items-center justify-between gap-4">
             <CardTitle className="text-base">{t('spLivePreview')}</CardTitle>
             <div className="flex items-center gap-1">
@@ -1505,13 +1694,13 @@ export const StitchprintTool: React.FC<StitchprintToolProps> = ({ onBack }) => {
               </Button>
             </div>
           </CardHeader>
-          <CardContent className="flex-1 flex flex-col gap-4">
+          <CardContent className="flex min-h-0 flex-1 flex-col gap-4">
             {selectedPaintIndex !== null && (
               <p className="text-xs text-muted-foreground">{t('spPaintHint')}</p>
             )}
             <div
               ref={previewContainerRef}
-              className="relative flex-1 min-h-[320px] overflow-hidden rounded-lg border touch-none select-none"
+              className="relative min-h-0 flex-1 overflow-hidden rounded-lg border touch-none select-none"
               role="img"
               aria-label={t('spLivePreview')}
               onPointerDown={(event) => {
@@ -1660,17 +1849,65 @@ function ParamSlider({
   suffix: string;
   onChange: (v: number) => void;
 }) {
+  const [draft, setDraft] = useState(String(value));
+
+  useEffect(() => {
+    setDraft(String(value));
+  }, [value]);
+
+  const commitDraft = () => {
+    const parsed = Number(draft);
+    if (!Number.isFinite(parsed)) {
+      setDraft(String(value));
+      return;
+    }
+    const next = Math.max(min, Math.min(max, parsed));
+    onChange(next);
+    setDraft(String(next));
+  };
+
   return (
     <div className="space-y-2">
       <div className="flex justify-between items-center gap-2">
-        <Label htmlFor={id}>{label}</Label>
-        <span className="text-sm text-muted-foreground tabular-nums">
-          {value}
-          {suffix}
-        </span>
+        <Label htmlFor={`${id}-input`}>{label}</Label>
+        <div className="flex items-center gap-1">
+          <input
+            id={`${id}-input`}
+            type="number"
+            inputMode="decimal"
+            min={min}
+            max={max}
+            step={step}
+            value={draft}
+            onChange={(event) => {
+              const nextDraft = event.target.value;
+              setDraft(nextDraft);
+              const parsed = Number(nextDraft);
+              if (nextDraft !== '' && Number.isFinite(parsed) && parsed >= min && parsed <= max) {
+                onChange(parsed);
+              }
+            }}
+            onBlur={commitDraft}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') event.currentTarget.blur();
+              if (event.key === 'Escape') {
+                setDraft(String(value));
+                event.currentTarget.blur();
+              }
+            }}
+            aria-label={`${label} (${min}–${max}${suffix})`}
+            className="h-8 w-20 rounded-md border border-input bg-background px-2 text-right text-sm tabular-nums"
+          />
+          {suffix && (
+            <span className="text-xs text-muted-foreground" aria-hidden="true">
+              {suffix}
+            </span>
+          )}
+        </div>
       </div>
       <Slider
         id={id}
+        aria-label={label}
         min={min}
         max={max}
         step={step}

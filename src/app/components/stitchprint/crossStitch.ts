@@ -1,10 +1,11 @@
 import {
   canvasShapeOutline,
   cellInCanvasShape,
+  pointInPolygon,
   shapeBounds,
   type CanvasShape,
 } from './canvasShape';
-import type { CrossStitchParams, PatternResult, Polyline } from './types';
+import type { CrossStitchParams, PatternResult, Point2, Polyline } from './types';
 
 /**
  * Generate graph-paper grid + X stitches only on occupied cells.
@@ -19,6 +20,7 @@ export function generateCrossStitch(params: CrossStitchParams): PatternResult {
     cellSize,
     strokeWidth,
     gridWeight,
+    edgeMarginMm,
     fillPercent,
     showBorder,
     baseStrategy,
@@ -73,97 +75,58 @@ export function generateCrossStitch(params: CrossStitchParams): PatternResult {
   }
 
   // --- Printed canvas lattice ---
-  // Bars are generated across the full used area; for non-rect silhouettes
-  // the exporters clip every grid segment to `outline`, so cells stay filled
-  // right up to the boundary and anything past it is trimmed.
+  // Real plastic canvas / Aida: holes sit at the grid INTERSECTIONS (the four
+  // corners of each stitch square), spaced by the pitch. The solid material
+  // between those holes is the bar/lattice. Bar width = pitch − holeSize,
+  // driven by `gridWeight`. Rendered as one filled even-odd path.
   if (includePrintedGrid) {
-    const detailBudget = cols * rows <= 4000;
-    const style: typeof canvasStyle =
-      canvasStyle !== 'square' && !detailBudget ? 'square' : canvasStyle;
-
-    if (style === 'diagonal') {
-      for (let r = 0; r < rows; r++) {
-        for (let c = 0; c < cols; c++) {
-          const x0 = offsetX + c * safeCell;
-          const y0 = offsetY + r * safeCell;
-          const x1 = x0 + safeCell;
-          const y1 = y0 + safeCell;
-          polylines.push({
-            id: nextId('mesh-a'),
-            layer: 'grid',
-            points: [
-              { x: x0, y: y0 },
-              { x: x1, y: y1 },
-            ],
-          });
-          polylines.push({
-            id: nextId('mesh-b'),
-            layer: 'grid',
-            points: [
-              { x: x1, y: y0 },
-              { x: x0, y: y1 },
-            ],
-          });
-        }
-      }
-    } else {
-      for (let c = 0; c <= cols; c++) {
-        const x = offsetX + c * safeCell;
-        polylines.push({
-          id: nextId('grid-v'),
-          layer: 'grid',
-          points: [
-            { x, y: offsetY },
-            { x, y: offsetY + rows * safeCell },
-          ],
-        });
-      }
+    const bar = Math.min(Math.max(gridWeight, 0.1), safeCell * 0.85);
+    const half = (safeCell - bar) / 2; // half hole size
+    const edgeMargin = Math.max(0, edgeMarginMm);
+    // Solid rim (skip incomplete edge holes) only for rectangles. Elsewhere
+    // punch every intersection — even-odd + clip keep only the silhouette
+    // intersection, so edge holes become partial and hug the outline.
+    const applyRim = shape === 'rect';
+    const holes: Point2[][] = [];
+    if (half > 0.05) {
       for (let r = 0; r <= rows; r++) {
-        const y = offsetY + r * safeCell;
-        polylines.push({
-          id: nextId('grid-h'),
-          layer: 'grid',
-          points: [
-            { x: offsetX, y },
-            { x: offsetX + cols * safeCell, y },
-          ],
-        });
-      }
-
-      if (style === 'rounded') {
-        const g = Math.min(gridWeight / 2, safeCell * 0.3);
-        const fillet = Math.min(safeCell * 0.42, safeCell / 2 - g - 0.05);
-        if (fillet > 0.05) {
-          for (let r = 1; r < rows; r++) {
-            for (let c = 1; c < cols; c++) {
-              const nx = offsetX + c * safeCell;
-              const ny = offsetY + r * safeCell;
-              const corners = [
-                [1, 1],
-                [-1, 1],
-                [1, -1],
-                [-1, -1],
-              ] as const;
-              for (const [sx, sy] of corners) {
-                polylines.push({
-                  id: nextId('grid-fillet'),
-                  layer: 'grid',
-                  points: [
-                    { x: nx + sx * (g + fillet), y: ny + sy * g },
-                    { x: nx + sx * g, y: ny + sy * (g + fillet) },
-                  ],
-                });
-              }
-            }
+        for (let c = 0; c <= cols; c++) {
+          // For the rect rim, keep holes that belong to at least one active cell.
+          if (applyRim) {
+            const touchesActive =
+              (r < rows && c < cols && active[r][c]) ||
+              (r < rows && c > 0 && active[r][c - 1]) ||
+              (r > 0 && c < cols && active[r - 1][c]) ||
+              (r > 0 && c > 0 && active[r - 1][c - 1]);
+            if (!touchesActive) continue;
           }
+          const cx = offsetX + c * safeCell;
+          const cy = offsetY + r * safeCell;
+          const hole = buildHole(canvasStyle, cx, cy, half);
+          if (applyRim && !holeFitsInsideOutline(hole, outline, edgeMargin)) {
+            continue;
+          }
+          holes.push(hole);
         }
       }
     }
+    polylines.push({
+      id: nextId('grid'),
+      layer: 'grid',
+      fill: true,
+      closed: true,
+      points: outline,
+      holes,
+    });
   }
 
-  // --- Cross stitches: only occupied cells inside silhouette ---
+  // --- Cross stitches ---
+  // Real cross-stitch: the X lives in the square BETWEEN four hole centers.
+  // Endpoints are those hole centers (grid intersections), never the mid-sides
+  // or visual "corners of a punched opening". fillPercent shortens the arms
+  // toward the cell center while keeping the same hole-anchored axis.
   const fill = Math.max(0.2, Math.min(1, fillPercent / 100));
-  const inset = safeCell * (1 - fill) * 0.45;
+  const inset = safeCell * (1 - fill) * 0.5;
   let occupiedCount = 0;
 
   if (colorMap && colorMap.length > 0) {
@@ -177,6 +140,7 @@ export function generateCrossStitch(params: CrossStitchParams): PatternResult {
         const color = palette[paletteIndex] ?? stitchColor;
 
         occupiedCount++;
+        // Four hole centers at the corners of this stitch square.
         const x0 = offsetX + col * safeCell + inset;
         const y0 = offsetY + r * safeCell + inset;
         const x1 = offsetX + (col + 1) * safeCell - inset;
@@ -231,6 +195,90 @@ export function generateCrossStitch(params: CrossStitchParams): PatternResult {
     outline,
     clipToShape,
   };
+}
+
+/**
+ * One hole polygon centered at a grid INTERSECTION (cx,cy). `half` is half
+ * the hole size so the remaining material between neighboring holes equals
+ * the bar width.
+ * - square   → straight square hole
+ * - rounded  → circular hole (real plastic-canvas look)
+ * - diagonal → diamond hole (woven / diagonal weave look)
+ */
+function buildHole(
+  style: 'square' | 'rounded' | 'diagonal',
+  cx: number,
+  cy: number,
+  half: number
+): { x: number; y: number }[] {
+  if (style === 'rounded') {
+    const segments = 14;
+    const pts: { x: number; y: number }[] = [];
+    for (let i = 0; i < segments; i++) {
+      const a = (i / segments) * Math.PI * 2;
+      pts.push({ x: cx + Math.cos(a) * half, y: cy + Math.sin(a) * half });
+    }
+    return pts;
+  }
+  if (style === 'diagonal') {
+    return [
+      { x: cx, y: cy - half },
+      { x: cx + half, y: cy },
+      { x: cx, y: cy + half },
+      { x: cx - half, y: cy },
+    ];
+  }
+  return [
+    { x: cx - half, y: cy - half },
+    { x: cx + half, y: cy - half },
+    { x: cx + half, y: cy + half },
+    { x: cx - half, y: cy + half },
+  ];
+}
+
+/**
+ * Keep complete holes inside the silhouette and preserve the requested solid
+ * rim. Midpoint checks also protect concave silhouettes (star / heart) where
+ * an edge could otherwise cross outside while both endpoints remain inside.
+ */
+function holeFitsInsideOutline(
+  hole: Point2[],
+  outline: Point2[],
+  edgeMargin: number
+): boolean {
+  if (outline.length < 3) return false;
+  for (let i = 0; i < hole.length; i++) {
+    const a = hole[i];
+    const b = hole[(i + 1) % hole.length];
+    const midpoint = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+    for (const sample of [a, midpoint]) {
+      if (!pointInPolygon(outline, sample.x, sample.y)) return false;
+      if (distanceToPolygonBoundary(sample, outline) + 1e-6 < edgeMargin) return false;
+    }
+  }
+  return true;
+}
+
+function distanceToPolygonBoundary(point: Point2, polygon: Point2[]): number {
+  let nearest = Infinity;
+  for (let i = 0; i < polygon.length; i++) {
+    const a = polygon[i];
+    const b = polygon[(i + 1) % polygon.length];
+    nearest = Math.min(nearest, distanceToSegment(point, a, b));
+  }
+  return nearest;
+}
+
+function distanceToSegment(point: Point2, a: Point2, b: Point2): number {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const lengthSquared = dx * dx + dy * dy;
+  if (lengthSquared === 0) return Math.hypot(point.x - a.x, point.y - a.y);
+  const t = Math.max(
+    0,
+    Math.min(1, ((point.x - a.x) * dx + (point.y - a.y) * dy) / lengthSquared)
+  );
+  return Math.hypot(point.x - (a.x + t * dx), point.y - (a.y + t * dy));
 }
 
 export function layerStrokeWidth(
